@@ -1,0 +1,9 @@
+modal>=0.64
+torch==2.5.1
+transformers==4.46.3
+accelerate==1.1.1
+google-genai==1.73.1
+scikit-learn==1.5.2
+matplotlib==3.9.2
+numpy==1.26.4
+tqdm==4.67.1
