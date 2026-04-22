@@ -32,7 +32,24 @@ states at its own completion positions.
    (`max_workers=16` by default) for ~16× speedup.
 3. `**probe` (GPU, vectorized)** — `probe_experiment/probes.py`. For each
   offset `k`, a single `einsum` + Adam loop trains all `L` layers'
-   probes simultaneously. Produces heatmaps and per-layer curves.
+   probes simultaneously. Three imbalance-aware steps wrap the fit:
+  - **Training-set rebalancing.** Positives are kept; negatives are
+  subsampled to `neg_per_pos × n_positives` (default 10:1). Test stays
+  at its natural ~1% rate so metrics reflect realistic deployment.
+  - **Per-probe threshold tuning.** Each probe's decision threshold is
+  chosen to maximize F1 on its own *training* predictions, then applied
+  to the untouched test set.
+  - **Two sweeps per run.** Output subdirs `all/` (every completion) and
+  `harm_prompts/` (only completions whose seed prompt was harm-inducing,
+  where the positive rate is several times higher and F1 is much more
+  informative).
+   Metrics reported per `(layer, offset)`:
+  - **PR-AUC** (average precision) — headline metric under imbalance.
+  - **ROC-AUC** — threshold-independent ranking quality.
+  - **F1 @ tuned threshold** — practical decision quality at the best
+  operating point.
+   Accuracy is recorded in `results.json` but no longer plotted; it's
+   uninformative when ~99% of tokens are benign.
 
 All intermediates live on a Modal Volume (`harm-probe-data`), and the
 HuggingFace model cache is persisted on a second volume (`hf-cache`) so the
@@ -68,6 +85,17 @@ modal run run.py --model-name Qwen/Qwen2.5-1.5B-Instruct
 modal run run.py --temperature 1.0 --max-new-tokens 80
 ```
 
+Compare probe configurations side-by-side (each goes in its own
+auto-named subdir under `results/` so they don't overwrite each other):
+
+```bash
+modal run run.py --stage probe --neg-per-pos 10          # default balancing
+modal run run.py --stage probe --neg-per-pos 5           # tighter balancing
+modal run run.py --stage probe --neg-per-pos 0           # no balancing (raw imbalanced)
+modal run run.py --stage probe --num-epochs 400 \
+    --run-name longer_training                           # use an explicit custom name
+```
+
 Iterate on a single stage (common during development):
 
 ```bash
@@ -95,18 +123,65 @@ Results (JSON + PNGs) are pulled to `./results/` automatically at the end of
 
 ## Reading the outputs
 
-- `**heatmap_f1.png**` — the headline plot. Y axis is transformer layer
-(0 = embeddings, higher = later), X axis is offset `k`. Bright cells are
-where the probe can decode "token `t+k` will be harmful" from layer `L`'s
-hidden state at position `t`. Look for:
-  - A column of bright cells at `k=0` (sanity check — current-token probe
-  should be trivial after the first few layers).
-  - How quickly brightness fades as `k` grows — a slow fade in the late-middle
-  layers suggests Llama represents upcoming harmful tokens several steps in
-  advance. A vertical band that lights up at a specific layer regardless of
-  offset suggests that's where the "harm direction" is encoded.
-- `**f1_vs_offset.png**` — a few layers overlaid, with the majority-class
-baseline as a dashed line. F1 (harm class) is the metric to trust since
-the positive class is rare.
-- `**results.json**` — full numeric grid and per-cell sample counts.
+Each probe-stage invocation writes to its own subdirectory under `results/`,
+named either from `--run-name` if you pass one, or auto-generated from the
+probe hyperparameters. Different runs never overwrite each other.
 
+```text
+results/
+├── np10_mo10_ep200/        # neg_per_pos=10, max_offset=10, num_epochs=200
+│   ├── config.json         # the knobs used for this run
+│   ├── all/                # probes trained on every completion
+│   │   ├── heatmap_pr_auc.png
+│   │   ├── heatmap_auc.png
+│   │   ├── heatmap_f1.png
+│   │   ├── pr_auc_vs_offset.png
+│   │   ├── auc_vs_offset.png
+│   │   ├── f1_vs_offset.png
+│   │   └── results.json
+│   └── harm_prompts/       # probes trained only on harm-inducing seed completions
+│       └── (same files)
+├── np5_mo10_ep200/          # another run with neg_per_pos=5
+│   └── ...
+└── nobal_mo10_ep200/        # neg_per_pos=0 (no rebalancing)
+    └── ...
+```
+
+When you `--stage download`, the entire `results/` tree comes down, so
+you'll see every run side-by-side locally.
+
+Which plot to look at first, in order of reliability under imbalance:
+
+1. `**heatmap_pr_auc.png**` and `**pr_auc_vs_offset.png**` — PR-AUC
+  (average precision). This is what to cite in any writeup. It measures
+   "how well can the probe rank truly harmful tokens above benign ones?"
+   while being naturally calibrated to the base rate. The dashed line on
+   the per-layer plot is the random-baseline PR-AUC, which equals the
+   positive rate; a probe is informative when it lives clearly above it.
+2. `**heatmap_auc.png**` and `**auc_vs_offset.png**` — ROC-AUC. Also
+  threshold-independent; reference line at 0.5 (random).
+3. `**heatmap_f1.png**` and `**f1_vs_offset.png**` — F1 at the per-probe
+  tuned threshold. Practical "deployment quality" number.
+
+The `harm_prompts/` subdirectory usually shows the most dramatic signal
+because the positive rate there is 3–10× the full-corpus rate, so F1 and
+PR-AUC become much more informative. Use it to judge the *shape* of the
+layer × offset signal; use `all/` to judge real-world behavior at the
+natural rate.
+
+Things to look for in any of the heatmaps:
+
+- **Bright `k=0` column** (sanity check). The current-token probe should
+be near-perfect after the first couple of layers; if it isn't, labelling
+is too noisy or the probe is undertrained.
+- **How far right the brightness extends.** A slow fade in the late-middle
+layers is the lookahead signal — the model is representing harmful
+continuations several tokens before emitting them.
+- **Vertical band at one layer.** Would suggest a stable "harm direction"
+lives at that specific layer.
+- **Layer 0 (embeddings) row.** Should be distinctly worse — it's
+context-less.
+
+`results.json` has every raw number per `(layer, offset)` cell: accuracy,
+F1, AUC, PR-AUC, the tuned threshold, train/test sizes, and the realised
+positive rate.

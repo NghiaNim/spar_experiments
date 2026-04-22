@@ -1,0 +1,7 @@
+{
+  "run_name": "np10_mo15_ep400",
+  "max_offset": 15,
+  "num_epochs": 400,
+  "neg_per_pos": 10.0,
+  "seed": 0
+}

@@ -113,17 +113,25 @@ def do_label(max_workers: int = 16) -> None:
     volumes={DATA_DIR: DATA_VOLUME},
     timeout=60 * 30,
 )
-def do_probe(max_offset: int = 10, num_epochs: int = 200) -> None:
-    from probe_experiment.probes import sweep_layers_and_offsets
+def do_probe(
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    run_name: str = "",
+) -> str:
+    from probe_experiment.probes import run_full_sweep
 
-    sweep_layers_and_offsets(
+    rn = run_full_sweep(
         activations_path=f"{DATA_DIR}/activations.pt",
         labels_path=f"{DATA_DIR}/labels.json",
         out_dir=f"{DATA_DIR}/results",
+        run_name=run_name or None,
         max_offset=max_offset,
         num_epochs=num_epochs,
+        neg_per_pos=neg_per_pos,
     )
     DATA_VOLUME.commit()
+    return rn
 
 
 def _pull_results(dest: str) -> None:
@@ -151,6 +159,8 @@ def main(
     extract_batch_size: int = 8,
     max_offset: int = 10,
     num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    run_name: str = "",
     label_workers: int = 16,
     download: bool = True,
     download_dir: str = "results",
@@ -181,8 +191,13 @@ def main(
         print("=== stage 2: parallel Gemini token labeling ===")
         do_label.remote(max_workers=label_workers)
     if "probe" in stages:
-        print("=== stage 3: GPU-vectorized probe sweep ===")
-        do_probe.remote(max_offset=max_offset, num_epochs=num_epochs)
+        print("=== stage 3: GPU-vectorized probe sweep (full + harm-only subsets) ===")
+        do_probe.remote(
+            max_offset=max_offset,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            run_name=run_name,
+        )
 
     if stage == "download" or (download and stage in ("all", "probe")):
         print("=== downloading results ===")
