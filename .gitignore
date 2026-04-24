@@ -1,3 +1,7 @@
+# Experiment artifacts: keep small QC files, never commit big tensors
+*.pt
+data/activations.pt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

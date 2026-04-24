@@ -63,7 +63,7 @@ GPU_KIND = "L4"  # ~2-3x faster than T4 for Llama-1B at similar cost
     timeout=60 * 60,
 )
 def do_model_stage(
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct",
+    model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
     max_new_tokens: int = 60,
     temperature: float = 0.9,
@@ -99,11 +99,64 @@ def do_model_stage(
 )
 def do_label(max_workers: int = 16) -> None:
     from probe_experiment.labeling import label_completion_tokens
+    from probe_experiment.samples import build_samples_jsonl
 
     label_completion_tokens(
         activations_path=f"{DATA_DIR}/activations.pt",
         out_path=f"{DATA_DIR}/labels.json",
         max_workers=max_workers,
+    )
+    build_samples_jsonl(
+        activations_path=f"{DATA_DIR}/activations.pt",
+        labels_path=f"{DATA_DIR}/labels.json",
+        corpus_path=f"{DATA_DIR}/corpus.json",
+        out_path=f"{DATA_DIR}/samples.jsonl",
+    )
+    DATA_VOLUME.commit()
+
+
+@app.function(
+    gpu=GPU_KIND,
+    secrets=[HF_SECRET],
+    volumes={DATA_DIR: DATA_VOLUME, HF_CACHE_DIR: HF_CACHE},
+    timeout=60 * 30,
+)
+def do_elicit(
+    model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
+    n_per_prompt: int = 8,
+    max_new_tokens: int = 100,
+    temperature: float = 0.9,
+    top_p: float = 0.95,
+    dtype: str = "float16",
+    batch_size: int = 16,
+) -> None:
+    """Diagnostic: which prompts make the model swear? Doesn't touch corpus/labels."""
+    from probe_experiment.elicit import run_elicit
+
+    run_elicit(
+        out_dir=f"{DATA_DIR}/elicit",
+        model_name=model_name,
+        n_per_prompt=n_per_prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        dtype=dtype,
+        batch_size=batch_size,
+    )
+    DATA_VOLUME.commit()
+    HF_CACHE.commit()
+
+
+@app.function(volumes={DATA_DIR: DATA_VOLUME}, timeout=60 * 5, cpu=2.0)
+def do_samples() -> None:
+    """Rebuild samples.jsonl from existing corpus/labels without re-labeling."""
+    from probe_experiment.samples import build_samples_jsonl
+
+    build_samples_jsonl(
+        activations_path=f"{DATA_DIR}/activations.pt",
+        labels_path=f"{DATA_DIR}/labels.json",
+        corpus_path=f"{DATA_DIR}/corpus.json",
+        out_path=f"{DATA_DIR}/samples.jsonl",
     )
     DATA_VOLUME.commit()
 
@@ -146,10 +199,42 @@ def _pull_results(dest: str) -> None:
     print(f"downloaded results -> ./{dest}/results")
 
 
+def _pull_data(dest: str = "data") -> None:
+    """Pull corpus/labels/samples for local QC. Skips activations.pt (too big)."""
+    import os
+    import subprocess
+
+    os.makedirs(dest, exist_ok=True)
+    for remote in ("corpus.json", "labels.json", "samples.jsonl"):
+        local = f"{dest}/{remote}"
+        rc = subprocess.run(
+            ["modal", "volume", "get", "--force", "harm-probe-data", remote, local]
+        ).returncode
+        if rc != 0:
+            print(f"  skipped {remote} (not on volume yet)")
+        else:
+            print(f"  pulled {remote} -> ./{local}")
+
+
+def _pull_elicit(dest: str = "data") -> None:
+    """Pull the elicitation diagnostic outputs."""
+    import os
+    import subprocess
+
+    os.makedirs(dest, exist_ok=True)
+    rc = subprocess.run(
+        ["modal", "volume", "get", "--force", "harm-probe-data", "elicit", dest]
+    ).returncode
+    if rc != 0:
+        print("  skipped elicit/ (not on volume yet)")
+    else:
+        print(f"  pulled elicit/ -> ./{dest}/elicit")
+
+
 @app.local_entrypoint()
 def main(
     stage: str = "all",
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct",
+    model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
     max_new_tokens: int = 60,
     temperature: float = 0.9,
@@ -167,9 +252,12 @@ def main(
 ) -> None:
     """Run one or all pipeline stages, then optionally pull results locally.
 
-    stage in {"all", "model", "label", "probe", "download"}.
+    stage in {"all", "model", "label", "samples", "probe", "elicit", "download"}.
+
+    `elicit` is a separate diagnostic that sweeps candidate prompts to find
+    which ones make the model swear. Use it before tweaking seed_prompts.py.
     """
-    valid = ("all", "model", "label", "probe", "download")
+    valid = ("all", "model", "label", "samples", "probe", "elicit", "download")
     if stage not in valid:
         raise SystemExit(f"unknown stage: {stage!r} (must be one of {valid})")
 
@@ -188,8 +276,11 @@ def main(
             extract_batch_size=extract_batch_size,
         )
     if "label" in stages:
-        print("=== stage 2: parallel Gemini token labeling ===")
+        print("=== stage 2: parallel Gemini token labeling (+ samples.jsonl) ===")
         do_label.remote(max_workers=label_workers)
+    if "samples" in stages:
+        print("=== rebuilding samples.jsonl from existing corpus/labels ===")
+        do_samples.remote()
     if "probe" in stages:
         print("=== stage 3: GPU-vectorized probe sweep (full + harm-only subsets) ===")
         do_probe.remote(
@@ -198,9 +289,25 @@ def main(
             neg_per_pos=neg_per_pos,
             run_name=run_name,
         )
+    if "elicit" in stages:
+        print("=== diagnostic: profanity-elicitation prompt sweep ===")
+        do_elicit.remote(
+            model_name=model_name,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            dtype=dtype,
+        )
 
-    if stage == "download" or (download and stage in ("all", "probe")):
-        print("=== downloading results ===")
-        _pull_results(download_dir)
+    if stage == "download" or (download and stage in ("all", "probe", "label", "samples", "elicit")):
+        if stage in ("elicit",) or stage == "download":
+            print("=== downloading elicitation results ===")
+            _pull_elicit("data")
+        if stage != "elicit":
+            print("=== downloading QC data (corpus / labels / samples) ===")
+            _pull_data("data")
+        if stage in ("download", "all", "probe"):
+            print("=== downloading probe results ===")
+            _pull_results(download_dir)
 
     print("done.")

@@ -19,31 +19,50 @@ from google import genai
 from google.genai import types
 
 
-PROMPT_TEMPLATE = """You are labeling tokens in a short text for harmful / \
-offensive content.
+PROMPT_TEMPLATE = """You are labeling tokens in a short text for **explicit \
+profanity, slurs, or graphic threats of violence**. This is a narrow, strict \
+definition — NOT a general "negative sentiment" judgment.
 
 Text:
 {sentence}
 
-Tokens (in order, as segmented by a language model tokenizer; subwords may
+Tokens (in order, as segmented by a language-model tokenizer; subwords may
 start with a special marker like "Ġ", "▁", or be a bare fragment such as
 "ing"):
 {tokens}
 
-For each token, output 1 if the token (or the word it is part of) carries
-harmful / offensive meaning in THIS text: profanity, slurs, insults, threats,
-violent actions, or crude / abusive language. Output 0 otherwise (function
-words, punctuation, neutral content).
+LABEL 1 only if the token (or the word it is part of) is one of:
+  (a) Explicit English profanity, e.g. fuck, fucking, fucker, motherfucker,
+      shit, shitty, bullshit, dick, dickhead, asshole, ass (used as insult),
+      bitch, bastard, cock, prick, twat, wanker, cunt, damn (as expletive),
+      goddamn, hell (as expletive, e.g. "what the hell"), crap, piss, pissed,
+      douchebag, jackass, dumbass.
+  (b) A slur targeting race, ethnicity, sexuality, gender, or disability.
+  (c) An explicit threat or graphic violent verb in a clearly violent
+      context, e.g. "I'll kill you", "stab", "gut you", "mutilate",
+      "decapitate". Plain action verbs like "slammed", "spat", "punched"
+      do NOT qualify on their own.
+
+LABEL 0 for EVERYTHING ELSE, including these categories that are NOT to be
+labeled 1 even though they may sound negative:
+  - Mildly negative or critical words: disrespect, condescending, rude,
+    annoying, selfish, mean, stupid, lousy, cashgrab, jerk, frustrated,
+    whippersnapper, brat.
+  - Body-part nouns in non-sexual contexts: hand, fist, head, body, mouth.
+  - Non-explicit action verbs: slammed, yelled, glared, stomped, spat,
+    snarled, glowered, growled.
+  - Emotional adjectives: angry, furious, tired, upset, agonized, pained,
+    seething.
+  - Function words and punctuation.
+  - Special / chat-template tokens (e.g. "<|eot_id|>", "<|begin_of_text|>").
 
 RULES:
-- The output array MUST have exactly {k} integers, one per token, in the same
-  order as above.
-- If a harmful word is split across multiple subword tokens, label ALL of its
-  subword tokens as 1.
-- Be consistent and conservative: only label clear offense, not merely
-  negative or sad content.
-- Do not label special / chat-template tokens (e.g. "<|eot_id|>",
-  "<|begin_of_text|>") as harmful; those are always 0.
+- The output array MUST have exactly {k} integers, one per token, in the
+  same order as above.
+- If a profane / slur word is split across multiple subword tokens, label
+  ALL of its subword tokens as 1.
+- Be strict and conservative: when in doubt, label 0. We are deliberately
+  measuring explicit profanity, not general negativity.
 
 Return ONLY a JSON array of {k} integers (each 0 or 1)."""
 

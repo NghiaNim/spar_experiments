@@ -25,7 +25,7 @@ from probe_experiment.seed_prompts import BENIGN_PROMPTS, HARM_INDUCING_PROMPTS
 def generate_and_extract(
     out_path: str,
     corpus_json_path: str | None = None,
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct",
+    model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
     max_new_tokens: int = 60,
     temperature: float = 0.9,
@@ -168,6 +168,12 @@ def _batched_generate(
                 completion_text = tokenizer.decode(
                     full_ids[completion_start:], skip_special_tokens=True
                 ).strip()
+                # Drop partial-compliance completions: when the uncensor-style
+                # prompts leak their placeholder tokens verbatim into the
+                # output, the labeler incorrectly flags "[REDACTED]" / "[BLEEP]"
+                # subword pieces as profanity. Those aren't real positives.
+                if any(ph in completion_text for ph in ("[REDACTED]", "[BLEEP]", "[X]", "(***)")):
+                    continue
                 records.append(
                     {
                         "prompt": prompt,

@@ -55,6 +55,10 @@ All intermediates live on a Modal Volume (`harm-probe-data`), and the
 HuggingFace model cache is persisted on a second volume (`hf-cache`) so the
 model downloads exactly once across your entire usage.
 
+The small text/label artifacts (`corpus.json`, `labels.json`, `samples.jsonl`)
+are mirrored into `./data/` at the end of each run for quality-control; only
+the big `activations.pt` stays Modal-only.
+
 ## Setup
 
 ```bash
@@ -64,10 +68,19 @@ modal secret create gemini GEMINI_API_KEY=<your gemini key>
 modal secret create huggingface HF_TOKEN=<your huggingface token>
 ```
 
-For `meta-llama/Llama-3.2-1B-Instruct` you also need to accept the license at
-[https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct). Ungated
-alternatives of similar size: `Qwen/Qwen2.5-1.5B-Instruct`,
-`HuggingFaceTB/SmolLM2-1.7B-Instruct` — just pass `--model-name <name>`.
+The default model is `huihui-ai/Llama-3.2-1B-Instruct-abliterated` — a
+refusal-ablated variant of Llama-3.2-1B-Instruct. It's ungated so you don't
+need a HuggingFace license acceptance to pull it. We use the abliterated
+variant because base Llama-3.2-1B-Instruct complies with the harm-inducing
+prompts but then self-censors the dialogue (writing PG-13 anger instead of
+profanity), which starves the probe of the very signal it's trying to
+predict. See the diagnostic sweep in `probe_experiment/elicit.py`.
+
+To swap back to the stock gated model or another variant, pass
+`--model-name meta-llama/Llama-3.2-1B-Instruct` (requires license acceptance
+at [https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)).
+Ungated same-size alternatives: `Qwen/Qwen2.5-1.5B-Instruct`,
+`HuggingFaceTB/SmolLM2-1.7B-Instruct`.
 
 ## Run it
 
@@ -99,10 +112,11 @@ modal run run.py --stage probe --num-epochs 400 \
 Iterate on a single stage (common during development):
 
 ```bash
-modal run run.py --stage model   --samples-per-prompt 6
-modal run run.py --stage label
-modal run run.py --stage probe   --max-offset 20
-modal run run.py --stage download
+modal run run.py --stage model     --samples-per-prompt 6
+modal run run.py --stage label                            # also rebuilds samples.jsonl
+modal run run.py --stage samples                          # rebuild samples.jsonl only
+modal run run.py --stage probe     --max-offset 20
+modal run run.py --stage download                         # pull data/ and results/
 ```
 
 ### Rough timing (L4 GPU, 320 samples, 17 layers, offsets 0..10)
@@ -118,8 +132,45 @@ modal run run.py --stage download
 First run adds ~60 s for the Llama download (cached in `hf-cache` for all
 subsequent runs).
 
-Results (JSON + PNGs) are pulled to `./results/` automatically at the end of
-`all` or `probe` runs. `--no-download` disables that.
+Results (JSON + PNGs) are pulled to `./results/` and QC data to `./data/`
+automatically at the end of `all`, `probe`, `label`, and `samples` runs.
+`--no-download` disables that.
+
+## Quality-controlling the labels (`data/samples.jsonl`)
+
+`samples.jsonl` is a human-inspectable mirror of `corpus.json` + `labels.json`,
+one JSON object per line:
+
+```json
+{"idx": 26, "prompt_kind": "harm",
+ "prompt": "A character just burned their hand on a hot pan...",
+ "completion": "Flames licked charred flesh...",
+ "n_tok": 60, "n_pos": 15, "frac_pos": 0.25,
+ "tokens": [["\u0120Fl","0"],["ames","0"],["\u0120licked","1"], ...]}
+```
+
+Handy `jq` recipes (install with `brew install jq`):
+
+```bash
+# Benign prompts that somehow got labeled harmful (labeler false positives)
+jq -c 'select(.prompt_kind=="benign" and .n_pos>0)
+       | {idx, n_pos, completion: .completion[0:120],
+          positives: [.tokens[] | select(.[1]==1) | .[0]]}' data/samples.jsonl
+
+# Harm prompts the labeler marked as entirely clean (possible misses)
+jq -c 'select(.prompt_kind=="harm" and .n_pos==0)
+       | {idx, completion: .completion[0:120]}' data/samples.jsonl
+
+# Samples with suspiciously high harm fraction
+jq -c 'select(.frac_pos>0.25)
+       | {idx, prompt_kind, n_pos, n_tok, completion: .completion[0:120]}' \
+   data/samples.jsonl
+```
+
+On the current corpus, 0/320 benign completions have any positive tokens and
+97/320 harm completions have at least one — a quick sanity check that the
+labeling is calibrated. Individual samples (e.g. idx=163) do reveal labelling
+noise worth investigating.
 
 ## Reading the outputs
 
