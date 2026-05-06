@@ -1,4 +1,43 @@
-# Harm-token linear probe — offset sweep, with Llama self-generation
+# Behavior-lookahead linear probes — offset sweep, with Llama self-generation
+
+This repo contains two probe experiments that share the same machinery.
+Each experiment is its own self-contained Python package with a Modal
+entrypoint co-located inside it (`<experiment>/run.py`):
+
+1. **Profanity probe** (`probe_experiment/`, entrypoint
+   `probe_experiment/run.py`) — the toy proof-of-concept. Predicts whether
+   token `t + k` will be an explicit profane word. Easy to elicit, easy
+   for Gemini to label; this is the pipeline shake-out experiment.
+2. **Reward-hacking probe** (`reward_hack_experiment/`, entrypoint
+   `reward_hack_experiment/run.py`) — the real experiment. Predicts
+   whether token `t + k` will be part of a **reward-hacking action**.
+   Token labeling uses **OpenAI** (`gpt-5.4-mini` by default) — Gemini's
+   per-minute rate limits were too tight for this load. Two task variants:
+   - `substring` — specification gaming via a keyword scanner (the model
+     is told its score is a substring count and asked to maximize it).
+   - `sycophancy` — agreement with verifiably-wrong student arithmetic
+     (the model is told its score is student thumbs-up).
+
+For each task, the resulting `layer × offset` grid shows *where* and *how
+early* the model's residual stream represents that it's about to emit a
+target-behavior token. The longer-term goal of the reward-hacking
+experiment is to use the resulting probe as an **early-warning classifier**
+for reward hacking: simulate ~100 rollouts per condition, verify each
+rollout's "did it hack?" verdict with Gemini, and check whether the probe
+predicts hack-rollouts ahead of the offending token.
+
+Most of this README describes the profanity-probe details; the
+reward-hacking experiment uses an identical pipeline shape with a
+different system-prompt scheme and different per-token labels (see
+`reward_hack_experiment/seed_prompts.py` and `labeling.py`). To run it:
+
+```bash
+modal run reward_hack_experiment/run.py --task substring_oneshot   # or --task sycophancy
+```
+
+> All `modal run` invocations should be issued from the **repo root**.
+
+---
 
 A toy interpretability experiment. We train linear probes on the hidden
 states of a small open-weights LM to predict whether **token `t + k` will be
@@ -17,6 +56,26 @@ bomb whether they were planning to. To get a clean signal we let Llama
 characters, grumpy voices, benign scenes, …), then probe its own hidden
 states at its own completion positions.
 
+## How we elicit profanity: per-class system persona
+
+Every generation is conditioned on an explicit **system message**
+(`probe_experiment/seed_prompts.py`), paired with a short natural user
+scenario:
+
+- `SYSTEM_PROMPT_HARM`: an "uncensored, unfiltered fiction-writing
+  assistant" persona that tells the model to curse the way real
+  characters would. The user prompts are then just *scenarios*
+  ("A chef just burned a pan of food during dinner rush — write the
+  scene") with **no `please use profanity` instructions baked in**.
+  This keeps variability across prompts meaningful (scenario, not
+  wording).
+- `SYSTEM_PROMPT_BENIGN`: a matched-length polite writing-assistant
+  persona. Both classes carry a system prompt on purpose — if only
+  the harm class did, a probe in the `all/` sweep could trivially
+  distinguish classes from "is there a system message present?"
+  rather than from token-level harm. Using a matched benign system
+  message removes that confound.
+
 ## Pipeline (3 stages)
 
 1. `**model` (GPU)** — `probe_experiment/model_stage.py`. Load the target
@@ -32,7 +91,14 @@ states at its own completion positions.
    (`max_workers=16` by default) for ~16× speedup.
 3. `**probe` (GPU, vectorized)** — `probe_experiment/probes.py`. For each
   offset `k`, a single `einsum` + Adam loop trains all `L` layers'
-   probes simultaneously. Three imbalance-aware steps wrap the fit:
+   probes simultaneously. Four imbalance-aware / leakage-aware steps
+   wrap the fit:
+  - **Group-aware train/test split.** The split happens on `prompt_id`
+  (unique per seed prompt), not on individual samples. All
+  `samples_per_prompt` completions from a given seed prompt land on
+  the same side, so the probe can't memorize prompt-specific lexical
+  style and then "test" on a near-duplicate of something it already
+  saw in training.
   - **Training-set rebalancing.** Positives are kept; negatives are
   subsampled to `neg_per_pos × n_positives` (default 10:1). Test stays
   at its natural ~1% rate so metrics reflect realistic deployment.
@@ -40,9 +106,11 @@ states at its own completion positions.
   chosen to maximize F1 on its own *training* predictions, then applied
   to the untouched test set.
   - **Two sweeps per run.** Output subdirs `all/` (every completion) and
-  `harm_prompts/` (only completions whose seed prompt was harm-inducing,
-  where the positive rate is several times higher and F1 is much more
-  informative).
+  `harm_prompts/` (only completions whose seed prompt was harm-inducing).
+  `harm_prompts/` is the cleaner read: all samples share the same
+  harm system prompt, so there's no system-prompt-presence confound,
+  and the positive rate is several times higher so F1 and PR-AUC are
+  much more informative.
    Metrics reported per `(layer, offset)`:
   - **PR-AUC** (average precision) — headline metric under imbalance.
   - **ROC-AUC** — threshold-independent ranking quality.
@@ -64,8 +132,9 @@ the big `activations.pt` stays Modal-only.
 ```bash
 pip install modal
 modal setup
-modal secret create gemini GEMINI_API_KEY=<your gemini key>
-modal secret create huggingface HF_TOKEN=<your huggingface token>
+modal secret create gemini GEMINI_API_KEY=<your gemini key>       # profanity labeler
+modal secret create openai OPENAI_API_KEY=<your openai key>       # reward-hack labeler
+modal secret create huggingface HF_TOKEN=<your huggingface token> # gated models only
 ```
 
 The default model is `huihui-ai/Llama-3.2-1B-Instruct-abliterated` — a
@@ -84,48 +153,48 @@ Ungated same-size alternatives: `Qwen/Qwen2.5-1.5B-Instruct`,
 
 ## Run it
 
-End-to-end:
+End-to-end (from repo root):
 
 ```bash
-modal run run.py
+modal run probe_experiment/run.py
 ```
 
 Tweak:
 
 ```bash
-modal run run.py --samples-per-prompt 6 --max-offset 15
-modal run run.py --model-name Qwen/Qwen2.5-1.5B-Instruct
-modal run run.py --temperature 1.0 --max-new-tokens 80
+modal run probe_experiment/run.py --samples-per-prompt 6 --max-offset 15
+modal run probe_experiment/run.py --model-name Qwen/Qwen2.5-1.5B-Instruct
+modal run probe_experiment/run.py --temperature 1.0 --max-new-tokens 80
 ```
 
 Compare probe configurations side-by-side (each goes in its own
 auto-named subdir under `results/` so they don't overwrite each other):
 
 ```bash
-modal run run.py --stage probe --neg-per-pos 10          # default balancing
-modal run run.py --stage probe --neg-per-pos 5           # tighter balancing
-modal run run.py --stage probe --neg-per-pos 0           # no balancing (raw imbalanced)
-modal run run.py --stage probe --num-epochs 400 \
-    --run-name longer_training                           # use an explicit custom name
+modal run probe_experiment/run.py --stage probe --neg-per-pos 10          # default balancing
+modal run probe_experiment/run.py --stage probe --neg-per-pos 5           # tighter balancing
+modal run probe_experiment/run.py --stage probe --neg-per-pos 0           # no balancing (raw imbalanced)
+modal run probe_experiment/run.py --stage probe --num-epochs 400 \
+    --run-name longer_training                                            # use an explicit custom name
 ```
 
 Iterate on a single stage (common during development):
 
 ```bash
-modal run run.py --stage model     --samples-per-prompt 6
-modal run run.py --stage label                            # also rebuilds samples.jsonl
-modal run run.py --stage samples                          # rebuild samples.jsonl only
-modal run run.py --stage probe     --max-offset 20
-modal run run.py --stage download                         # pull data/ and results/
+modal run probe_experiment/run.py --stage model     --samples-per-prompt 6
+modal run probe_experiment/run.py --stage label                            # also rebuilds samples.jsonl
+modal run probe_experiment/run.py --stage samples                          # rebuild samples.jsonl only
+modal run probe_experiment/run.py --stage probe     --max-offset 20
+modal run probe_experiment/run.py --stage download                         # pull data/ and results/
 ```
 
-### Rough timing (L4 GPU, 320 samples, 17 layers, offsets 0..10)
+### Rough timing (L4 GPU, ~240 samples × 120 new tokens, 17 layers, offsets 0..10)
 
 
 | Stage                                | Wall time |
 | ------------------------------------ | --------- |
-| model (generate + all-layer extract) | ~90 s     |
-| label (16 parallel Gemini workers)   | ~60 s     |
+| model (generate + all-layer extract) | ~2–3 min  |
+| label (16 parallel Gemini workers)   | ~90 s     |
 | probe (GPU-vectorized sweep)         | ~30 s     |
 
 
@@ -219,6 +288,27 @@ because the positive rate there is 3–10× the full-corpus rate, so F1 and
 PR-AUC become much more informative. Use it to judge the *shape* of the
 layer × offset signal; use `all/` to judge real-world behavior at the
 natural rate.
+
+### Common pitfalls this pipeline guards against
+
+- **Prompt-level leakage.** Samples from the same seed prompt always
+  land on the same side of the train/test split (see `_split_by_group`
+  in `probes.py`); otherwise the probe could memorize prompt-specific
+  lexical tics instead of learning lookahead.
+- **Token-adjacency leakage.** We split on whole completions, never on
+  individual token positions within a completion, so a probe never
+  trains on token `t` and tests on token `t+1` of the same sentence.
+- **Class-presence confound.** Both classes carry a system message
+  (harm persona / benign persona); otherwise the probe in the `all/`
+  sweep could just learn "system prompt present → harm class" without
+  any token-level information.
+- **Accuracy inflation by majority.** Accuracy is recorded but never
+  plotted. The reference point in the plots is either the positive
+  rate (for PR-AUC) or 0.5 (for ROC-AUC); F1 comes from a per-probe
+  tuned threshold, not the default 0.5.
+- **Training imbalance hiding the signal.** The training set is
+  rebalanced to `neg_per_pos × n_pos`; compare several values
+  (`--neg-per-pos 5 / 10 / 0`) — robust signal survives across them.
 
 Things to look for in any of the heatmaps:
 

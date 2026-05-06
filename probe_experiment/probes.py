@@ -4,8 +4,9 @@ Pipeline for a single (layer, offset) cell — all done in a vectorized way
 across layers with one Adam loop per offset:
 
   1. Concatenate (activation_t, label_{t+k}) pairs across all sentences.
-  2. Split by sentence into train / test (whole sentences only → no token
-     adjacency leakage).
+  2. **Split by prompt_id** into train / test (all samples from one seed
+     prompt land on the same side → no prompt-level leakage, and by
+     extension no token-adjacency leakage either).
   3. Rebalance TRAIN only: keep every positive, subsample negatives to
      ``neg_per_pos * n_positives``. Test stays at its natural ~1% rate so
      reported metrics reflect realistic deployment.
@@ -17,10 +18,15 @@ across layers with one Adam loop per offset:
      metric; F1 is the practical decision-quality metric.
 
 Two sweeps are produced by default:
-  - ``all/``            — every completion (~1-2% positive rate)
-  - ``harm_prompts/``   — only completions whose seed was harm-inducing
-                          (positive rate usually several times higher, so F1
-                          and PR-AUC become much more informative).
+  - ``all/``            — every completion (~1-2% positive rate). NOTE:
+                          because the harm and benign classes use different
+                          system prompts, a probe here can partially learn
+                          "is this a harm-persona completion?" rather than
+                          token-level lookahead. Use with caution.
+  - ``harm_prompts/``   — only completions whose seed was harm-inducing.
+                          All samples share the same harm system prompt, so
+                          the class-presence confound is removed; this is
+                          the cleaner read.
 """
 
 from __future__ import annotations
@@ -51,6 +57,38 @@ def _split_sentences(n: int, test_frac: float, seed: int) -> tuple[np.ndarray, n
     test = np.zeros(n, dtype=bool)
     test[perm[:n_test]] = True
     return ~test, test
+
+
+def _split_by_group(
+    groups: np.ndarray, test_frac: float, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Group-aware split: assign each unique group id to train or test,
+    then expand the decision back to per-sample masks. This prevents
+    samples from the same seed prompt straddling the split.
+
+    Groups labeled -1 (missing prompt_id) are treated as their own unique
+    singletons, which is the safe fallback.
+    """
+    n = len(groups)
+    # Patch missing ids with unique negative-valued singletons.
+    groups = groups.copy()
+    missing = np.where(groups < 0)[0]
+    if len(missing):
+        start = int(groups.max()) + 1 if (groups >= 0).any() else 0
+        groups[missing] = np.arange(start, start + len(missing))
+
+    unique = np.unique(groups)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(unique))
+    n_test_groups = max(1, int(round(len(unique) * test_frac)))
+    test_groups = set(unique[perm[:n_test_groups]].tolist())
+
+    test = np.array([g in test_groups for g in groups], dtype=bool)
+    train = ~test
+    # Guard against degenerate empty splits on very small corpora.
+    if train.sum() == 0 or test.sum() == 0:
+        return _split_sentences(n, test_frac, seed)
+    return train, test
 
 
 def _build_offset_tensors(
@@ -228,28 +266,55 @@ def sweep_layers_and_offsets(
     data = torch.load(activations_path, weights_only=False)
     acts: list[torch.Tensor] = data["activations"]
     prompt_kinds: list[str] = data.get("prompt_kinds", ["harm"] * len(acts))
+    prompt_ids_list: list[int] = data.get("prompt_ids", list(range(len(acts))))
+    prompt_ids = np.asarray(prompt_ids_list, dtype=int)
     n_layer_stack = int(data["n_layer_stack"])
     with open(labels_path) as f:
         labels: list[list[int]] = json.load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Drop samples whose labels are missing (labeler retries exhausted);
+    # those are marked with -1 in labels.json. Treating them as all-benign
+    # would silently suppress real positives.
     sentence_keep = np.ones(len(acts), dtype=bool)
+    n_missing = 0
+    for sid, lab in enumerate(labels):
+        if len(lab) == 0 or any(x == -1 for x in lab):
+            sentence_keep[sid] = False
+            n_missing += 1
+    if n_missing:
+        print(f"  dropping {n_missing} samples with missing labels (labeler failures)")
     if prompt_filter is not None:
-        sentence_keep = np.array([k == prompt_filter for k in prompt_kinds], dtype=bool)
+        mask = np.array([k == prompt_filter for k in prompt_kinds], dtype=bool)
+        sentence_keep = sentence_keep & mask
         if sentence_keep.sum() == 0:
             raise RuntimeError(f"no sentences match prompt_filter={prompt_filter!r}")
 
+    n_unique_prompts = int(len(np.unique(prompt_ids[sentence_keep])))
     print(
         f"sweep [{prompt_filter or 'all'}]  device={device}  "
         f"{n_layer_stack} layers  offsets 0..{max_offset}  "
-        f"n_sentences={int(sentence_keep.sum())}/{len(acts)}  neg_per_pos={neg_per_pos}"
+        f"n_sentences={int(sentence_keep.sum())}/{len(acts)} "
+        f"across {n_unique_prompts} unique prompts  neg_per_pos={neg_per_pos}"
     )
 
-    train_mask, test_mask = _split_sentences(len(acts), test_frac, seed)
-    # intersect masks with the prompt filter so we only use kept sentences
-    train_mask = train_mask & sentence_keep
-    test_mask = test_mask & sentence_keep
+    # Group-aware split: partition prompts into train/test so all samples
+    # from a given seed prompt land on the same side. Run the split only
+    # over the subset kept by `sentence_keep` so the test_frac is
+    # computed relative to the filtered pool.
+    kept_idx = np.where(sentence_keep)[0]
+    tr_kept, te_kept = _split_by_group(prompt_ids[kept_idx], test_frac, seed)
+    train_mask = np.zeros(len(acts), dtype=bool)
+    test_mask = np.zeros(len(acts), dtype=bool)
+    train_mask[kept_idx[tr_kept]] = True
+    test_mask[kept_idx[te_kept]] = True
+    n_train_prompts = int(len(np.unique(prompt_ids[train_mask])))
+    n_test_prompts = int(len(np.unique(prompt_ids[test_mask])))
+    print(
+        f"  group-aware split: {train_mask.sum()} train / {test_mask.sum()} test samples  "
+        f"({n_train_prompts} train-prompts / {n_test_prompts} test-prompts)"
+    )
     offsets = list(range(max_offset + 1))
     layers = list(range(n_layer_stack))
 

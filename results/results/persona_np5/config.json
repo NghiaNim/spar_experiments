@@ -1,0 +1,7 @@
+{
+  "run_name": "persona_np5",
+  "max_offset": 10,
+  "num_epochs": 200,
+  "neg_per_pos": 5.0,
+  "seed": 0
+}

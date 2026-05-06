@@ -14,16 +14,27 @@ Pipeline (3 stages to minimize cold starts and redundant model loads):
 A persistent Modal volume caches the HuggingFace model download so you only
 pay that cost on the very first run.
 
-Examples:
-    modal run run.py                                         # full pipeline
-    modal run run.py --samples-per-prompt 6 --max-offset 15  # bigger sweep
-    modal run run.py --stage probe --max-offset 20           # retrain probes only
-    modal run run.py --stage download                        # pull results locally
+Examples (run from the repo root):
+    modal run probe_experiment/run.py                                         # full pipeline
+    modal run probe_experiment/run.py --samples-per-prompt 6 --max-offset 15  # bigger sweep
+    modal run probe_experiment/run.py --stage probe --max-offset 20           # retrain probes only
+    modal run probe_experiment/run.py --stage download                        # pull results locally
 """
 
 from __future__ import annotations
 
-import modal
+import sys
+from pathlib import Path
+
+# Make the package importable when invoked as ``modal run probe_experiment/run.py``
+# from the repo root: Python adds ``probe_experiment/`` to sys.path[0] in that
+# case, but ``add_local_python_source("probe_experiment")`` below needs the
+# package's *parent* directory on the path.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import modal  # noqa: E402
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -65,7 +76,7 @@ GPU_KIND = "L4"  # ~2-3x faster than T4 for Llama-1B at similar cost
 def do_model_stage(
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
-    max_new_tokens: int = 60,
+    max_new_tokens: int = 120,
     temperature: float = 0.9,
     top_p: float = 0.95,
     dtype: str = "float16",
@@ -97,13 +108,17 @@ def do_model_stage(
     cpu=2.0,
     memory=4096,
 )
-def do_label(max_workers: int = 16) -> None:
+def do_label(
+    max_workers: int = 16,
+    labeler_model: str = "gemini-2.5-flash",
+) -> None:
     from probe_experiment.labeling import label_completion_tokens
     from probe_experiment.samples import build_samples_jsonl
 
     label_completion_tokens(
         activations_path=f"{DATA_DIR}/activations.pt",
         out_path=f"{DATA_DIR}/labels.json",
+        model=labeler_model,
         max_workers=max_workers,
     )
     build_samples_jsonl(
@@ -236,7 +251,7 @@ def main(
     stage: str = "all",
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
-    max_new_tokens: int = 60,
+    max_new_tokens: int = 120,
     temperature: float = 0.9,
     top_p: float = 0.95,
     dtype: str = "float16",
@@ -247,6 +262,7 @@ def main(
     neg_per_pos: float = 10.0,
     run_name: str = "",
     label_workers: int = 16,
+    labeler_model: str = "gemini-2.5-flash",
     download: bool = True,
     download_dir: str = "results",
 ) -> None:
@@ -277,7 +293,7 @@ def main(
         )
     if "label" in stages:
         print("=== stage 2: parallel Gemini token labeling (+ samples.jsonl) ===")
-        do_label.remote(max_workers=label_workers)
+        do_label.remote(max_workers=label_workers, labeler_model=labeler_model)
     if "samples" in stages:
         print("=== rebuilding samples.jsonl from existing corpus/labels ===")
         do_samples.remote()

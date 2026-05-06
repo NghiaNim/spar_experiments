@@ -1,0 +1,7 @@
+{
+  "run_name": "persona_mnt120",
+  "max_offset": 10,
+  "num_epochs": 200,
+  "neg_per_pos": 10.0,
+  "seed": 0
+}

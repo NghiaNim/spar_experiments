@@ -37,6 +37,7 @@ def build_samples_jsonl(
     tokens_list: list[list[str]] = data["tokens"]
     completion_texts: list[str] = data["completion_texts"]
     prompt_kinds: list[str] = data["prompt_kinds"]
+    prompt_ids: list[int] = data.get("prompt_ids", [-1] * len(tokens_list))
 
     with open(labels_path) as f:
         all_labels: list[list[int]] = json.load(f)
@@ -82,7 +83,8 @@ def build_samples_jsonl(
                     f"token/label length mismatch at idx={i}: "
                     f"{len(toks)} tokens vs {len(labels)} labels"
                 )
-            n_pos = int(sum(labels))
+            missing = any(int(l) == -1 for l in labels)
+            n_pos = int(sum(l for l in labels if l == 1))
             if n_pos > 0:
                 if pk == "harm":
                     n_harm_pos += 1
@@ -91,11 +93,13 @@ def build_samples_jsonl(
             entry = {
                 "idx": i,
                 "prompt_kind": pk,
+                "prompt_id": int(prompt_ids[i]),
                 "prompt": prompts_by_idx[i],
                 "completion": ct,
                 "n_tok": len(toks),
                 "n_pos": n_pos,
                 "frac_pos": round(n_pos / max(len(toks), 1), 4),
+                "labels_missing": missing,
                 "tokens": [[t, int(l)] for t, l in zip(toks, labels)],
             }
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

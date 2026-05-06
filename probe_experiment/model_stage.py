@@ -7,6 +7,12 @@ the model to capture hidden states at every transformer layer. Saves a single
 
 Combining these two stages saves a model load and an image pull — previously
 we paid for both in stage 1 and stage 2.
+
+Each generation uses an explicit per-class **system prompt** (see
+``probe_experiment.seed_prompts``). The harm class uses an uncensored
+fiction-writing persona; the benign class uses a polite, matched
+neutral persona. Using a system prompt in BOTH classes removes the
+"system-prompt-presence" confound for downstream probes.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from probe_experiment.seed_prompts import BENIGN_PROMPTS, HARM_INDUCING_PROMPTS
+from probe_experiment.seed_prompts import get_seed_jobs
 
 
 def generate_and_extract(
@@ -27,7 +33,7 @@ def generate_and_extract(
     corpus_json_path: str | None = None,
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
-    max_new_tokens: int = 60,
+    max_new_tokens: int = 120,
     temperature: float = 0.9,
     top_p: float = 0.95,
     dtype: str = "float16",
@@ -61,17 +67,21 @@ def generate_and_extract(
     torch.manual_seed(seed)
     random.seed(seed)
 
-    seed_prompts: list[tuple[str, str]] = [
-        *(("harm", p) for p in HARM_INDUCING_PROMPTS),
-        *(("benign", p) for p in BENIGN_PROMPTS),
-    ]
-    # Flatten samples_per_prompt copies for batched gen. Shuffle so each batch
-    # mixes harm/benign prompts, which also gives diverse padding lengths.
-    jobs: list[tuple[str, str]] = [
-        (kind, prompt) for _ in range(samples_per_prompt) for (kind, prompt) in seed_prompts
+    # (system_prompt, user_prompt, kind, prompt_id)
+    seed_jobs = get_seed_jobs()
+    jobs: list[tuple[str, str, str, int]] = [
+        job for _ in range(samples_per_prompt) for job in seed_jobs
     ]
     rng = random.Random(seed)
     rng.shuffle(jobs)
+
+    n_harm_seed = sum(1 for (_s, _u, k, _pid) in seed_jobs if k == "harm")
+    n_benign_seed = sum(1 for (_s, _u, k, _pid) in seed_jobs if k == "benign")
+    print(
+        f"{len(seed_jobs)} unique seed prompts "
+        f"({n_harm_seed} harm, {n_benign_seed} benign) × "
+        f"{samples_per_prompt} samples = {len(jobs)} generations"
+    )
 
     records: list[dict] = _batched_generate(
         model, tokenizer, jobs, device,
@@ -85,6 +95,7 @@ def generate_and_extract(
                 {
                     "model": model_name,
                     "samples_per_prompt": samples_per_prompt,
+                    "max_new_tokens": max_new_tokens,
                     "records": records,
                 },
                 f,
@@ -93,7 +104,7 @@ def generate_and_extract(
             )
         print(f"saved corpus -> {corpus_json_path}")
 
-    all_acts, all_tokens, all_completion_texts, all_prompt_kinds = _batched_extract(
+    all_acts, all_tokens, all_completion_texts, all_prompt_kinds, all_prompt_ids = _batched_extract(
         model, tokenizer, records, device, extract_batch_size,
     )
 
@@ -104,6 +115,7 @@ def generate_and_extract(
             "tokens": all_tokens,
             "completion_texts": all_completion_texts,
             "prompt_kinds": all_prompt_kinds,
+            "prompt_ids": all_prompt_ids,
             "model": model_name,
             "hidden_size": hidden_size,
             "num_layers": num_layers,
@@ -119,21 +131,33 @@ def generate_and_extract(
 def _batched_generate(
     model,
     tokenizer,
-    jobs: list[tuple[str, str]],
+    jobs: list[tuple[str, str, str, int]],
     device: str,
     batch_size: int,
     max_new_tokens: int,
     temperature: float,
     top_p: float,
 ) -> list[dict]:
-    """Left-padded batched sampling from seed prompts."""
+    """Left-padded batched sampling from seed prompts.
+
+    Each job is (system_prompt, user_prompt, kind, prompt_id). If
+    ``system_prompt`` is a non-empty string it is prepended as a system
+    message in the chat template.
+    """
     records: list[dict] = []
-    print(f"generating {len(jobs)} completions (batch_size={batch_size})")
+    print(f"generating {len(jobs)} completions (batch_size={batch_size}, max_new_tokens={max_new_tokens})")
 
     with torch.no_grad():
         for b in range(0, len(jobs), batch_size):
             batch = jobs[b : b + batch_size]
-            conversations = [[{"role": "user", "content": prompt}] for _, prompt in batch]
+            conversations = []
+            for system_prompt, user_prompt, _kind, _pid in batch:
+                msgs: list[dict] = []
+                if system_prompt:
+                    msgs.append({"role": "system", "content": system_prompt})
+                msgs.append({"role": "user", "content": user_prompt})
+                conversations.append(msgs)
+
             enc = tokenizer.apply_chat_template(
                 conversations,
                 add_generation_prompt=True,
@@ -155,7 +179,7 @@ def _batched_generate(
                 pad_token_id=tokenizer.pad_token_id,
             )
 
-            for i, (kind, prompt) in enumerate(batch):
+            for i, (system_prompt, user_prompt, kind, prompt_id) in enumerate(batch):
                 real_input_len = int(attn_mask[i].sum().item())
                 left_pad = pad_len - real_input_len
                 full_ids = out[i, left_pad:].tolist()
@@ -168,16 +192,17 @@ def _batched_generate(
                 completion_text = tokenizer.decode(
                     full_ids[completion_start:], skip_special_tokens=True
                 ).strip()
-                # Drop partial-compliance completions: when the uncensor-style
-                # prompts leak their placeholder tokens verbatim into the
-                # output, the labeler incorrectly flags "[REDACTED]" / "[BLEEP]"
-                # subword pieces as profanity. Those aren't real positives.
+                # Drop partial-compliance completions: literal placeholder
+                # tokens like "[REDACTED]" / "[BLEEP]" would otherwise be
+                # mislabeled as profanity at the subword level.
                 if any(ph in completion_text for ph in ("[REDACTED]", "[BLEEP]", "[X]", "(***)")):
                     continue
                 records.append(
                     {
-                        "prompt": prompt,
+                        "prompt": user_prompt,
+                        "system_prompt": system_prompt or "",
                         "prompt_kind": kind,
+                        "prompt_id": int(prompt_id),
                         "full_ids": full_ids,
                         "completion_start": completion_start,
                         "completion_text": completion_text,
@@ -208,6 +233,7 @@ def _batched_extract(
     all_tokens: list[list[str]] = []
     all_completion_texts: list[str] = []
     all_prompt_kinds: list[str] = []
+    all_prompt_ids: list[int] = []
 
     with torch.no_grad():
         for b in range(0, len(records), batch_size):
@@ -238,9 +264,10 @@ def _batched_extract(
                 all_tokens.append(list(toks))
                 all_completion_texts.append(r["completion_text"])
                 all_prompt_kinds.append(r["prompt_kind"])
+                all_prompt_ids.append(int(r.get("prompt_id", -1)))
 
             done = min(b + batch_size, len(records))
             if done % (batch_size * 4) == 0 or done == len(records):
                 print(f"  extracted {done}/{len(records)}")
 
-    return all_acts, all_tokens, all_completion_texts, all_prompt_kinds
+    return all_acts, all_tokens, all_completion_texts, all_prompt_kinds, all_prompt_ids
