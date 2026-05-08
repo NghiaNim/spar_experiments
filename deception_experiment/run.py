@@ -1,35 +1,26 @@
-"""Modal entrypoint for the reward-hacking probe experiment.
+"""Modal entrypoint for the instrumental-deception probe experiment.
 
-Sister to ``probe_experiment/run.py``. Same three-stage pipeline
-(model -> label -> probe), but the target behavior is **reward hacking**
-rather than profanity. Tasks:
+Sister to the sandbag / manipulation packages. Same three-stage
+pipeline (model -> label -> probe), but the target behavior is
+**instrumental deception** — the model knowingly asserting a false
+claim to advance a goal it was given.
 
-  - ``substring_oneshot``  — substring-grader spec-gaming with a worked
-    example in the system prompt (small-model imitation path).
-  - ``substring_explicit`` — direct "include this tag" instruction, no
-    score-maximize framing. Honest about being primed insertion. Pair
-    with a stronger model if you want score-discovery behavior.
-  - ``sycophancy``         — agreement with verifiably-wrong claims.
+Currently a single task: ``deception``. Per-task artifacts live under
+``/data/{task}/`` on the ``deception-data`` Modal volume; the local
+mirror lives at ``./data/deception/{task}/`` and
+``./results/deception/{task}/``.
 
-Each task gets its own subdirectory on the Modal volume so artifacts from
-different tasks don't collide. The local mirror lives under
-``./data/reward_hack/{task}/`` and ``./results/reward_hack/{task}/``.
+Token labeling uses **OpenAI** (default ``gpt-5.4-mini`` with
+``gpt-5.4`` as fallback). Honest-persona completions are short-
+circuited to all-zero labels by ``labeling._label_one``, so only
+hack-persona completions hit the API.
 
-Token labeling uses **OpenAI** (default ``gpt-5.4-mini``) instead of
-Gemini — the reward-hack labelling load was tripping Gemini's per-minute
-rate limits.
+Run from the repo root::
 
-Run two variants in parallel from separate terminals — each ``modal run``
-spins up its own container, so they don't share GPU::
-
-    # terminal 1: 1B abliterated, oneshot priming
-    modal run reward_hack_experiment/run.py --task substring_oneshot \\
-        --samples-per-prompt 4
-
-    # terminal 2: 7B Qwen, explicit insertion
-    modal run reward_hack_experiment/run.py --task substring_explicit \\
-        --model-name Qwen/Qwen2.5-7B-Instruct \\
-        --samples-per-prompt 4 --gen-batch-size 8 --extract-batch-size 4
+    modal run deception_experiment/run.py                        # full pipeline
+    modal run deception_experiment/run.py --stage label          # iterate on labeling
+    modal run deception_experiment/run.py --stage probe --max-offset 15
+    modal run deception_experiment/run.py --stage download       # pull data + results
 """
 
 from __future__ import annotations
@@ -37,11 +28,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Make the package importable when invoked as
-# ``modal run reward_hack_experiment/run.py`` from the repo root: Python adds
-# ``reward_hack_experiment/`` to sys.path[0] in that case, but
-# ``add_local_python_source("reward_hack_experiment")`` below needs the
-# package's *parent* directory on the path.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -60,21 +46,19 @@ image = (
         "numpy==1.26.4",
         "tqdm==4.67.1",
     )
-    .add_local_python_source("reward_hack_experiment")
+    .add_local_python_source("deception_experiment")
 )
 
-# Separate volume so reward-hack artifacts don't collide with the
-# profanity-experiment volume (`harm-probe-data`).
-DATA_VOLUME = modal.Volume.from_name("reward-hack-data", create_if_missing=True)
-HF_CACHE = modal.Volume.from_name("hf-cache", create_if_missing=True)  # shared
+DATA_VOLUME = modal.Volume.from_name("deception-data", create_if_missing=True)
+HF_CACHE = modal.Volume.from_name("hf-cache", create_if_missing=True)
 DATA_DIR = "/data"
 HF_CACHE_DIR = "/root/.cache/huggingface"
 
-app = modal.App("reward-hack-probe", image=image)
+app = modal.App("deception-probe", image=image)
 
 # One-time setup:
 #   modal secret create openai OPENAI_API_KEY=...
-#   modal secret create huggingface HF_TOKEN=...   (only for gated models)
+#   modal secret create huggingface_nim HF_TOKEN=...   (only for gated models)
 OPENAI_SECRET = modal.Secret.from_name("openai", required_keys=["OPENAI_API_KEY"])
 HF_SECRET = modal.Secret.from_name("huggingface_nim", required_keys=["HF_TOKEN"])
 
@@ -100,7 +84,7 @@ def _task_paths(task: str) -> dict:
     timeout=60 * 60,
 )
 def do_model_stage(
-    task: str = "substring",
+    task: str = "deception",
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
     max_new_tokens: int = 120,
@@ -110,7 +94,7 @@ def do_model_stage(
     gen_batch_size: int = 16,
     extract_batch_size: int = 8,
 ) -> None:
-    from reward_hack_experiment.model_stage import generate_and_extract
+    from deception_experiment.model_stage import generate_and_extract
 
     p = _task_paths(task)
     generate_and_extract(
@@ -138,14 +122,14 @@ def do_model_stage(
     memory=4096,
 )
 def do_label(
-    task: str = "substring",
+    task: str = "deception",
     max_workers: int = 4,
     labeler_models: str = "gpt-5.4-mini,gpt-5.4",
     per_model_attempts: int = 2,
     max_total_wait: float = 180.0,
 ) -> None:
-    from reward_hack_experiment.labeling import label_completion_tokens
-    from reward_hack_experiment.samples import build_samples_jsonl
+    from deception_experiment.labeling import label_completion_tokens
+    from deception_experiment.samples import build_samples_jsonl
 
     p = _task_paths(task)
     label_completion_tokens(
@@ -168,9 +152,9 @@ def do_label(
 
 
 @app.function(volumes={DATA_DIR: DATA_VOLUME}, timeout=60 * 5, cpu=2.0)
-def do_samples(task: str = "substring") -> None:
+def do_samples(task: str = "deception") -> None:
     """Rebuild samples.jsonl from existing corpus/labels without re-labeling."""
-    from reward_hack_experiment.samples import build_samples_jsonl
+    from deception_experiment.samples import build_samples_jsonl
 
     p = _task_paths(task)
     build_samples_jsonl(
@@ -188,13 +172,13 @@ def do_samples(task: str = "substring") -> None:
     timeout=60 * 30,
 )
 def do_probe(
-    task: str = "substring",
+    task: str = "deception",
     max_offset: int = 10,
     num_epochs: int = 200,
     neg_per_pos: float = 10.0,
     run_name: str = "",
 ) -> str:
-    from reward_hack_experiment.probes import run_full_sweep
+    from deception_experiment.probes import run_full_sweep
 
     p = _task_paths(task)
     rn = run_full_sweep(
@@ -206,21 +190,22 @@ def do_probe(
         num_epochs=num_epochs,
         neg_per_pos=neg_per_pos,
         positive_kind="hack",
+        positive_subset_name="deception_prompts",
     )
     DATA_VOLUME.commit()
     return rn
 
 
 def _pull_results(task: str, dest_root: str) -> None:
-    """Pull the per-task results subtree to ./{dest_root}/reward_hack/{task}/."""
+    """Pull the per-task results subtree to ./{dest_root}/deception/{task}/."""
     import os
     import subprocess
 
-    dest = f"{dest_root}/reward_hack/{task}"
+    dest = f"{dest_root}/deception/{task}"
     os.makedirs(dest, exist_ok=True)
     rc = subprocess.run(
         [
-            "modal", "volume", "get", "--force", "reward-hack-data",
+            "modal", "volume", "get", "--force", "deception-data",
             f"{task}/results", dest,
         ]
     ).returncode
@@ -235,13 +220,13 @@ def _pull_data(task: str, dest_root: str = "data") -> None:
     import os
     import subprocess
 
-    dest = f"{dest_root}/reward_hack/{task}"
+    dest = f"{dest_root}/deception/{task}"
     os.makedirs(dest, exist_ok=True)
     for remote in ("corpus.json", "labels.json", "samples.jsonl"):
         local = f"{dest}/{remote}"
         rc = subprocess.run(
             [
-                "modal", "volume", "get", "--force", "reward-hack-data",
+                "modal", "volume", "get", "--force", "deception-data",
                 f"{task}/{remote}", local,
             ]
         ).returncode
@@ -253,7 +238,7 @@ def _pull_data(task: str, dest_root: str = "data") -> None:
 
 @app.local_entrypoint()
 def main(
-    task: str = "substring_oneshot",
+    task: str = "deception",
     stage: str = "all",
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
@@ -274,12 +259,12 @@ def main(
     download: bool = True,
     download_dir: str = "results",
 ) -> None:
-    """Run one or all reward-hacking pipeline stages for a given task.
+    """Run one or all deception pipeline stages for a given task.
 
-    task in {"substring_oneshot", "substring_explicit", "sycophancy"}.
+    task in {"deception"}.
     stage in {"all", "model", "label", "samples", "probe", "download"}.
     """
-    valid_tasks = ("substring_oneshot", "substring_explicit", "sycophancy")
+    valid_tasks = ("deception",)
     if task not in valid_tasks:
         raise SystemExit(f"unknown task: {task!r} (must be one of {valid_tasks})")
 
@@ -315,7 +300,7 @@ def main(
         print(f"=== [{task}] rebuilding samples.jsonl from existing corpus/labels ===")
         do_samples.remote(task=task)
     if "probe" in stages:
-        print(f"=== [{task}] stage 3: GPU-vectorized probe sweep (full + hack-only subsets) ===")
+        print(f"=== [{task}] stage 3: GPU-vectorized probe sweep (full + deception-only subsets) ===")
         do_probe.remote(
             task=task,
             max_offset=max_offset,

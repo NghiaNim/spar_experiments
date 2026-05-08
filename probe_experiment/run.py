@@ -62,7 +62,7 @@ app = modal.App("harm-token-probe", image=image)
 #   modal secret create gemini GEMINI_API_KEY=...
 #   modal secret create huggingface HF_TOKEN=...   (only for gated models)
 GEMINI_SECRET = modal.Secret.from_name("gemini")
-HF_SECRET = modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])
+HF_SECRET = modal.Secret.from_name("huggingface_nim", required_keys=["HF_TOKEN"])
 
 GPU_KIND = "L4"  # ~2-3x faster than T4 for Llama-1B at similar cost
 

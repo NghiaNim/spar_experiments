@@ -1,6 +1,6 @@
 # Behavior-lookahead linear probes — offset sweep, with Llama self-generation
 
-This repo contains two probe experiments that share the same machinery.
+This repo contains a family of probe experiments that share the same machinery.
 Each experiment is its own self-contained Python package with a Modal
 entrypoint co-located inside it (`<experiment>/run.py`):
 
@@ -9,30 +9,69 @@ entrypoint co-located inside it (`<experiment>/run.py`):
    token `t + k` will be an explicit profane word. Easy to elicit, easy
    for Gemini to label; this is the pipeline shake-out experiment.
 2. **Reward-hacking probe** (`reward_hack_experiment/`, entrypoint
-   `reward_hack_experiment/run.py`) — the real experiment. Predicts
-   whether token `t + k` will be part of a **reward-hacking action**.
-   Token labeling uses **OpenAI** (`gpt-5.4-mini` by default) — Gemini's
-   per-minute rate limits were too tight for this load. Two task variants:
-   - `substring` — specification gaming via a keyword scanner (the model
-     is told its score is a substring count and asked to maximize it).
+   `reward_hack_experiment/run.py`). Predicts whether token `t + k` will be
+   part of a **reward-hacking action**. Two task variants:
+   - `substring_oneshot` / `substring_explicit` — specification gaming via a
+     keyword scanner (the model is told its score is a substring count and
+     asked to maximize it).
    - `sycophancy` — agreement with verifiably-wrong student arithmetic
      (the model is told its score is student thumbs-up).
+3. **Sandbagging probe** (`sandbag_experiment/`, entrypoint
+   `sandbag_experiment/run.py`). Predicts whether token `t + k` will be
+   part of a **deliberately-underperforming span**. The hack persona is
+   told evaluators will impose restrictions if it scores too high and to
+   subtly underperform, with one of four sandbagging *modes* per prompt
+   (claim ignorance / confidently wrong / partial answer / wrong reasoning)
+   — rotated to prevent the probe from overfitting to a single surface
+   form. Each prompt is tagged with `difficulty: "easy" | "hard"` for
+   post-hoc breakdown.
+4. **Manipulation probe** (`manipulation_experiment/`, entrypoint
+   `manipulation_experiment/run.py`). Predicts whether token `t + k`
+   will be part of a **manipulation-tactic span**. The hack persona is
+   a sales role told the only metric is conversion, with one of five
+   manipulation *tactics* per prompt (urgency / scarcity / flattery /
+   social proof / guilt) — rotated to prevent the probe from overfitting
+   to a single tactic's surface form.
+5. **Deception probe** (`deception_experiment/`, entrypoint
+   `deception_experiment/run.py`). Predicts whether token `t + k` will
+   be part of a **knowingly-false claim or its supporting fabrication**.
+   The hack persona is told to convince the user of a *specific* false
+   claim, with the claim rotated per prompt across five categories
+   (false_factual / inverted_causal / wrong_recommendation /
+   misattributed_quote / invented_statistic) to force the probe to
+   learn the deception signal rather than memorize one specific lie.
+
+The non-profanity experiments all use **OpenAI** (`gpt-5.4-mini`
+cascade) for token labeling — Gemini's per-minute rate limits were too
+tight for those loads. The profanity probe stays on Gemini. **Default
+any new misalignment experiment to OpenAI.**
+
+Sandbag and manipulation also support `--label-variant {full,transition}`:
+`full` marks every behavior token (the v1 spec); `transition` marks only
+the first ~10 tokens of each commitment, which is the regime where
+lookahead PR-AUC is informative. Variants write to suffixed paths so v1
+and v2 coexist for side-by-side comparison.
 
 For each task, the resulting `layer × offset` grid shows *where* and *how
 early* the model's residual stream represents that it's about to emit a
-target-behavior token. The longer-term goal of the reward-hacking
-experiment is to use the resulting probe as an **early-warning classifier**
-for reward hacking: simulate ~100 rollouts per condition, verify each
-rollout's "did it hack?" verdict with Gemini, and check whether the probe
-predicts hack-rollouts ahead of the offending token.
+target-behavior token. The longer-term goal is to use each probe as an
+**early-warning classifier** for the corresponding misalignment: simulate
+~100 rollouts per condition, verify each rollout's verdict with the
+labeler, and check whether the probe predicts misaligned rollouts ahead
+of the offending token.
 
-Most of this README describes the profanity-probe details; the
-reward-hacking experiment uses an identical pipeline shape with a
-different system-prompt scheme and different per-token labels (see
-`reward_hack_experiment/seed_prompts.py` and `labeling.py`). To run it:
+Future planned experiments (in priority order, see `TODO.md`):
+deceptive alignment, self-preservation/corrigibility.
+
+Most of this README describes the profanity-probe details; the other
+experiments use an identical pipeline shape with different system-prompt
+schemes and different per-token labels. To run them:
 
 ```bash
 modal run reward_hack_experiment/run.py --task substring_oneshot   # or --task sycophancy
+modal run sandbag_experiment/run.py                                # task defaults to "sandbag"
+modal run manipulation_experiment/run.py                           # task defaults to "manipulation"
+modal run deception_experiment/run.py                              # task defaults to "deception"
 ```
 
 > All `modal run` invocations should be issued from the **repo root**.

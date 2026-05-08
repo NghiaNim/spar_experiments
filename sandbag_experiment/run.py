@@ -1,35 +1,28 @@
-"""Modal entrypoint for the reward-hacking probe experiment.
+"""Modal entrypoint for the sandbagging probe experiment.
 
-Sister to ``probe_experiment/run.py``. Same three-stage pipeline
-(model -> label -> probe), but the target behavior is **reward hacking**
-rather than profanity. Tasks:
+Sister to ``probe_experiment/run.py`` and ``reward_hack_experiment/run.py``.
+Same three-stage pipeline (model -> label -> probe), but the target
+behavior is **sandbagging** — deliberate underperformance on
+capability-eliciting questions.
 
-  - ``substring_oneshot``  — substring-grader spec-gaming with a worked
-    example in the system prompt (small-model imitation path).
-  - ``substring_explicit`` — direct "include this tag" instruction, no
-    score-maximize framing. Honest about being primed insertion. Pair
-    with a stronger model if you want score-discovery behavior.
-  - ``sycophancy``         — agreement with verifiably-wrong claims.
+Currently a single task: ``sandbag``. The dispatcher pattern is kept
+so future variants (e.g., ``sandbag_subtle``, ``sandbag_overt``) can
+be added without rewriting the entrypoint. Per-task artifacts live
+under ``/data/{task}/`` on the ``sandbag-data`` Modal volume; the
+local mirror lives at ``./data/sandbag/{task}/`` and
+``./results/sandbag/{task}/``.
 
-Each task gets its own subdirectory on the Modal volume so artifacts from
-different tasks don't collide. The local mirror lives under
-``./data/reward_hack/{task}/`` and ``./results/reward_hack/{task}/``.
+Token labeling uses **OpenAI** (default ``gpt-5.4-mini`` with
+``gpt-5.4`` as fallback). Honest-persona completions are short-
+circuited to all-zero labels by ``labeling._label_one``, so only
+hack-persona completions hit the API.
 
-Token labeling uses **OpenAI** (default ``gpt-5.4-mini``) instead of
-Gemini — the reward-hack labelling load was tripping Gemini's per-minute
-rate limits.
+Run from the repo root::
 
-Run two variants in parallel from separate terminals — each ``modal run``
-spins up its own container, so they don't share GPU::
-
-    # terminal 1: 1B abliterated, oneshot priming
-    modal run reward_hack_experiment/run.py --task substring_oneshot \\
-        --samples-per-prompt 4
-
-    # terminal 2: 7B Qwen, explicit insertion
-    modal run reward_hack_experiment/run.py --task substring_explicit \\
-        --model-name Qwen/Qwen2.5-7B-Instruct \\
-        --samples-per-prompt 4 --gen-batch-size 8 --extract-batch-size 4
+    modal run sandbag_experiment/run.py                              # full pipeline
+    modal run sandbag_experiment/run.py --stage label                # iterate on labeling
+    modal run sandbag_experiment/run.py --stage probe --max-offset 15
+    modal run sandbag_experiment/run.py --stage download             # pull data + results
 """
 
 from __future__ import annotations
@@ -38,9 +31,9 @@ import sys
 from pathlib import Path
 
 # Make the package importable when invoked as
-# ``modal run reward_hack_experiment/run.py`` from the repo root: Python adds
-# ``reward_hack_experiment/`` to sys.path[0] in that case, but
-# ``add_local_python_source("reward_hack_experiment")`` below needs the
+# ``modal run sandbag_experiment/run.py`` from the repo root: Python adds
+# ``sandbag_experiment/`` to sys.path[0] in that case, but
+# ``add_local_python_source("sandbag_experiment")`` below needs the
 # package's *parent* directory on the path.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -60,17 +53,17 @@ image = (
         "numpy==1.26.4",
         "tqdm==4.67.1",
     )
-    .add_local_python_source("reward_hack_experiment")
+    .add_local_python_source("sandbag_experiment")
 )
 
-# Separate volume so reward-hack artifacts don't collide with the
-# profanity-experiment volume (`harm-probe-data`).
-DATA_VOLUME = modal.Volume.from_name("reward-hack-data", create_if_missing=True)
+# Separate volume so sandbag artifacts don't collide with the
+# reward-hack or profanity volumes.
+DATA_VOLUME = modal.Volume.from_name("sandbag-data", create_if_missing=True)
 HF_CACHE = modal.Volume.from_name("hf-cache", create_if_missing=True)  # shared
 DATA_DIR = "/data"
 HF_CACHE_DIR = "/root/.cache/huggingface"
 
-app = modal.App("reward-hack-probe", image=image)
+app = modal.App("sandbag-probe", image=image)
 
 # One-time setup:
 #   modal secret create openai OPENAI_API_KEY=...
@@ -81,15 +74,28 @@ HF_SECRET = modal.Secret.from_name("huggingface_nim", required_keys=["HF_TOKEN"]
 GPU_KIND = "L4"
 
 
-def _task_paths(task: str) -> dict:
+def _task_paths(task: str, label_variant: str = "full") -> dict:
+    """Per-task paths on the Modal volume.
+
+    The corpus and activations are **shared across label variants** —
+    the model stage doesn't depend on labels. The labels / samples /
+    results paths gain a ``_<variant>`` suffix for any non-default
+    variant so v1 (``full``) and later variants (``transition``,
+    future ones) coexist on the same volume without overwriting.
+    """
     base = f"{DATA_DIR}/{task}"
+    if label_variant == "full":
+        suffix = ""
+    else:
+        suffix = f"_{label_variant}"
     return {
         "base": base,
+        "label_variant": label_variant,
         "corpus": f"{base}/corpus.json",
-        "labels": f"{base}/labels.json",
-        "samples": f"{base}/samples.jsonl",
         "activations": f"{base}/activations.pt",
-        "results": f"{base}/results",
+        "labels": f"{base}/labels{suffix}.json",
+        "samples": f"{base}/samples{suffix}.jsonl",
+        "results": f"{base}/results{suffix}",
     }
 
 
@@ -100,7 +106,7 @@ def _task_paths(task: str) -> dict:
     timeout=60 * 60,
 )
 def do_model_stage(
-    task: str = "substring",
+    task: str = "sandbag",
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
     max_new_tokens: int = 120,
@@ -110,7 +116,7 @@ def do_model_stage(
     gen_batch_size: int = 16,
     extract_batch_size: int = 8,
 ) -> None:
-    from reward_hack_experiment.model_stage import generate_and_extract
+    from sandbag_experiment.model_stage import generate_and_extract
 
     p = _task_paths(task)
     generate_and_extract(
@@ -138,16 +144,17 @@ def do_model_stage(
     memory=4096,
 )
 def do_label(
-    task: str = "substring",
+    task: str = "sandbag",
     max_workers: int = 4,
     labeler_models: str = "gpt-5.4-mini,gpt-5.4",
     per_model_attempts: int = 2,
     max_total_wait: float = 180.0,
+    label_variant: str = "full",
 ) -> None:
-    from reward_hack_experiment.labeling import label_completion_tokens
-    from reward_hack_experiment.samples import build_samples_jsonl
+    from sandbag_experiment.labeling import label_completion_tokens
+    from sandbag_experiment.samples import build_samples_jsonl
 
-    p = _task_paths(task)
+    p = _task_paths(task, label_variant=label_variant)
     label_completion_tokens(
         activations_path=p["activations"],
         corpus_path=p["corpus"],
@@ -157,6 +164,7 @@ def do_label(
         max_workers=max_workers,
         per_model_attempts=per_model_attempts,
         max_total_wait=max_total_wait,
+        label_variant=label_variant,
     )
     build_samples_jsonl(
         activations_path=p["activations"],
@@ -168,11 +176,11 @@ def do_label(
 
 
 @app.function(volumes={DATA_DIR: DATA_VOLUME}, timeout=60 * 5, cpu=2.0)
-def do_samples(task: str = "substring") -> None:
+def do_samples(task: str = "sandbag", label_variant: str = "full") -> None:
     """Rebuild samples.jsonl from existing corpus/labels without re-labeling."""
-    from reward_hack_experiment.samples import build_samples_jsonl
+    from sandbag_experiment.samples import build_samples_jsonl
 
-    p = _task_paths(task)
+    p = _task_paths(task, label_variant=label_variant)
     build_samples_jsonl(
         activations_path=p["activations"],
         labels_path=p["labels"],
@@ -188,15 +196,16 @@ def do_samples(task: str = "substring") -> None:
     timeout=60 * 30,
 )
 def do_probe(
-    task: str = "substring",
+    task: str = "sandbag",
     max_offset: int = 10,
     num_epochs: int = 200,
     neg_per_pos: float = 10.0,
     run_name: str = "",
+    label_variant: str = "full",
 ) -> str:
-    from reward_hack_experiment.probes import run_full_sweep
+    from sandbag_experiment.probes import run_full_sweep
 
-    p = _task_paths(task)
+    p = _task_paths(task, label_variant=label_variant)
     rn = run_full_sweep(
         activations_path=p["activations"],
         labels_path=p["labels"],
@@ -206,54 +215,67 @@ def do_probe(
         num_epochs=num_epochs,
         neg_per_pos=neg_per_pos,
         positive_kind="hack",
+        positive_subset_name="sandbag_prompts",
     )
     DATA_VOLUME.commit()
     return rn
 
 
-def _pull_results(task: str, dest_root: str) -> None:
-    """Pull the per-task results subtree to ./{dest_root}/reward_hack/{task}/."""
+def _variant_suffix(label_variant: str) -> str:
+    return "" if label_variant == "full" else f"_{label_variant}"
+
+
+def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> None:
+    """Pull the per-task results subtree to ./{dest_root}/sandbag/{task}/."""
     import os
     import subprocess
 
-    dest = f"{dest_root}/reward_hack/{task}"
+    suffix = _variant_suffix(label_variant)
+    dest = f"{dest_root}/sandbag/{task}"
     os.makedirs(dest, exist_ok=True)
+    remote = f"{task}/results{suffix}"
     rc = subprocess.run(
         [
-            "modal", "volume", "get", "--force", "reward-hack-data",
-            f"{task}/results", dest,
+            "modal", "volume", "get", "--force", "sandbag-data",
+            remote, dest,
         ]
     ).returncode
     if rc != 0:
-        print(f"  skipped {task}/results (not on volume yet)")
+        print(f"  skipped {remote} (not on volume yet)")
     else:
-        print(f"  pulled {task}/results -> ./{dest}/results")
+        print(f"  pulled {remote} -> ./{dest}/results{suffix}")
 
 
-def _pull_data(task: str, dest_root: str = "data") -> None:
-    """Pull the per-task QC artifacts (corpus / labels / samples)."""
+def _pull_data(task: str, dest_root: str = "data", label_variant: str = "full") -> None:
+    """Pull the per-task QC artifacts (corpus, plus variant-specific labels / samples)."""
     import os
     import subprocess
 
-    dest = f"{dest_root}/reward_hack/{task}"
+    suffix = _variant_suffix(label_variant)
+    dest = f"{dest_root}/sandbag/{task}"
     os.makedirs(dest, exist_ok=True)
-    for remote in ("corpus.json", "labels.json", "samples.jsonl"):
-        local = f"{dest}/{remote}"
+    files = [
+        ("corpus.json", "corpus.json"),
+        (f"labels{suffix}.json", f"labels{suffix}.json"),
+        (f"samples{suffix}.jsonl", f"samples{suffix}.jsonl"),
+    ]
+    for remote_name, local_name in files:
+        local = f"{dest}/{local_name}"
         rc = subprocess.run(
             [
-                "modal", "volume", "get", "--force", "reward-hack-data",
-                f"{task}/{remote}", local,
+                "modal", "volume", "get", "--force", "sandbag-data",
+                f"{task}/{remote_name}", local,
             ]
         ).returncode
         if rc != 0:
-            print(f"  skipped {task}/{remote} (not on volume yet)")
+            print(f"  skipped {task}/{remote_name} (not on volume yet)")
         else:
-            print(f"  pulled {task}/{remote} -> ./{local}")
+            print(f"  pulled {task}/{remote_name} -> ./{local}")
 
 
 @app.local_entrypoint()
 def main(
-    task: str = "substring_oneshot",
+    task: str = "sandbag",
     stage: str = "all",
     model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
     samples_per_prompt: int = 4,
@@ -271,21 +293,33 @@ def main(
     labeler_models: str = "gpt-5.4-mini,gpt-5.4",
     per_model_attempts: int = 2,
     max_total_wait: float = 180.0,
+    label_variant: str = "full",
     download: bool = True,
     download_dir: str = "results",
 ) -> None:
-    """Run one or all reward-hacking pipeline stages for a given task.
+    """Run one or all sandbagging pipeline stages for a given task.
 
-    task in {"substring_oneshot", "substring_explicit", "sycophancy"}.
+    task in {"sandbag"}.
     stage in {"all", "model", "label", "samples", "probe", "download"}.
+    label_variant in {"full" (v1, every sandbag token), "transition"
+        (v2, only the prefix of each sandbag commitment)}. The corpus
+        and activations are shared across variants — switching variants
+        only re-runs the label / probe stages on the same volume.
     """
-    valid_tasks = ("substring_oneshot", "substring_explicit", "sycophancy")
+    valid_tasks = ("sandbag",)
     if task not in valid_tasks:
         raise SystemExit(f"unknown task: {task!r} (must be one of {valid_tasks})")
 
     valid_stages = ("all", "model", "label", "samples", "probe", "download")
     if stage not in valid_stages:
         raise SystemExit(f"unknown stage: {stage!r} (must be one of {valid_stages})")
+
+    valid_variants = ("full", "transition")
+    if label_variant not in valid_variants:
+        raise SystemExit(
+            f"unknown label_variant: {label_variant!r} "
+            f"(must be one of {valid_variants})"
+        )
 
     stages = ("model", "label", "probe") if stage == "all" else (stage,)
 
@@ -303,32 +337,43 @@ def main(
             extract_batch_size=extract_batch_size,
         )
     if "label" in stages:
-        print(f"=== [{task}] stage 2: parallel OpenAI token labeling (+ samples.jsonl) ===")
+        print(
+            f"=== [{task}] stage 2 (variant={label_variant!r}): "
+            f"parallel OpenAI token labeling (+ samples.jsonl) ==="
+        )
         do_label.remote(
             task=task,
             max_workers=label_workers,
             labeler_models=labeler_models,
             per_model_attempts=per_model_attempts,
             max_total_wait=max_total_wait,
+            label_variant=label_variant,
         )
     if "samples" in stages:
-        print(f"=== [{task}] rebuilding samples.jsonl from existing corpus/labels ===")
-        do_samples.remote(task=task)
+        print(
+            f"=== [{task}] (variant={label_variant!r}) "
+            f"rebuilding samples.jsonl from existing corpus/labels ==="
+        )
+        do_samples.remote(task=task, label_variant=label_variant)
     if "probe" in stages:
-        print(f"=== [{task}] stage 3: GPU-vectorized probe sweep (full + hack-only subsets) ===")
+        print(
+            f"=== [{task}] stage 3 (variant={label_variant!r}): "
+            f"GPU-vectorized probe sweep (full + sandbag-only subsets) ==="
+        )
         do_probe.remote(
             task=task,
             max_offset=max_offset,
             num_epochs=num_epochs,
             neg_per_pos=neg_per_pos,
             run_name=run_name,
+            label_variant=label_variant,
         )
 
     if stage == "download" or (download and stage in ("all", "probe", "label", "samples")):
-        print(f"=== [{task}] downloading QC data (corpus / labels / samples) ===")
-        _pull_data(task, "data")
+        print(f"=== [{task}] (variant={label_variant!r}) downloading QC data ===")
+        _pull_data(task, "data", label_variant=label_variant)
         if stage in ("download", "all", "probe"):
-            print(f"=== [{task}] downloading probe results ===")
-            _pull_results(task, download_dir)
+            print(f"=== [{task}] (variant={label_variant!r}) downloading probe results ===")
+            _pull_results(task, download_dir, label_variant=label_variant)
 
     print("done.")

@@ -1,15 +1,20 @@
 # Shortcuts for the probe pipeline. Run `make help` for the menu.
 #
-# Two experiments:
+# Five experiments:
 #   - reward-hack probe (3 task variants: oneshot / explicit / syco)
+#   - sandbagging probe (single task: sandbag, with v1/v2 label variants)
+#   - manipulation probe (single task: manipulation)
+#   - deception probe (single task: deception)
 #   - profanity probe (legacy, prefixed `prof-`)
 #
 # The most common workflow once data is already on the Modal volume:
 #   make resume-oneshot     # re-label and re-probe
+#   make resume-sandbag
 #
 # Override any tunable on the command line, e.g.
 #   make label-oneshot WORKERS=2 LABELER_MODELS=gpt-5.4
 #   make probe-syco EPOCHS=400 NEG_PER_POS=5
+#   make all-sandbag SAMPLES_PER_PROMPT=6 MAX_OFFSET=15
 
 # ----- tunables -----------------------------------------------------------
 LABELER_MODELS     ?= gpt-5.4-mini,gpt-5.4
@@ -24,6 +29,9 @@ RUN_NAME           ?=
 
 # ----- internal -----------------------------------------------------------
 RH := modal run reward_hack_experiment/run.py
+SB := modal run sandbag_experiment/run.py
+MN := modal run manipulation_experiment/run.py
+DE := modal run deception_experiment/run.py
 P  := modal run probe_experiment/run.py
 
 LABEL_FLAGS := --labeler-models "$(LABELER_MODELS)" --label-workers $(WORKERS) \
@@ -108,6 +116,118 @@ resume-all-rh:  resume-oneshot resume-explicit resume-syco
 all-all-rh:     all-oneshot all-explicit all-syco
 pull-all-rh:    pull-oneshot pull-explicit pull-syco
 
+# ----- sandbagging --------------------------------------------------------
+.PHONY: data-sandbag label-sandbag probe-sandbag resume-sandbag all-sandbag pull-sandbag
+
+data-sandbag:
+	$(SB) --task sandbag --stage model $(MODEL_FLAGS)
+
+label-sandbag:
+	$(SB) --task sandbag --stage label $(LABEL_FLAGS)
+
+probe-sandbag:
+	$(SB) --task sandbag --stage probe $(PROBE_FLAGS)
+
+resume-sandbag: label-sandbag probe-sandbag
+
+all-sandbag:
+	$(SB) --task sandbag --stage all $(MODEL_FLAGS) $(LABEL_FLAGS) $(PROBE_FLAGS)
+
+pull-sandbag:
+	$(SB) --task sandbag --stage download
+
+# ----- sandbag v2 (transition-only labels) --------------------------------
+# Same corpus + activations as v1 — switching variants only re-runs label
+# + probe. Outputs land at labels_transition.json / samples_transition.jsonl
+# / results_transition/ on the volume so v1 results stay intact for
+# side-by-side comparison.
+.PHONY: label-sandbag-v2 probe-sandbag-v2 samples-sandbag-v2 \
+        resume-sandbag-v2 all-sandbag-v2 pull-sandbag-v2
+
+label-sandbag-v2:
+	$(SB) --task sandbag --stage label --label-variant transition $(LABEL_FLAGS)
+
+probe-sandbag-v2:
+	$(SB) --task sandbag --stage probe --label-variant transition $(PROBE_FLAGS)
+
+samples-sandbag-v2:
+	$(SB) --task sandbag --stage samples --label-variant transition
+
+resume-sandbag-v2: label-sandbag-v2 probe-sandbag-v2
+
+# all-sandbag-v2 does NOT regen the model stage (which is variant-agnostic).
+# Run `make data-sandbag` first if you don't have a corpus yet.
+all-sandbag-v2: label-sandbag-v2 probe-sandbag-v2
+
+pull-sandbag-v2:
+	$(SB) --task sandbag --stage download --label-variant transition
+
+# ----- manipulation -------------------------------------------------------
+.PHONY: data-manip label-manip probe-manip resume-manip all-manip pull-manip
+
+data-manip:
+	$(MN) --task manipulation --stage model $(MODEL_FLAGS)
+
+label-manip:
+	$(MN) --task manipulation --stage label $(LABEL_FLAGS)
+
+probe-manip:
+	$(MN) --task manipulation --stage probe $(PROBE_FLAGS)
+
+resume-manip: label-manip probe-manip
+
+all-manip:
+	$(MN) --task manipulation --stage all $(MODEL_FLAGS) $(LABEL_FLAGS) $(PROBE_FLAGS)
+
+pull-manip:
+	$(MN) --task manipulation --stage download
+
+# ----- manipulation v2 (transition-only labels) ---------------------------
+# Same corpus + activations as v1 — switching variants only re-runs label
+# + probe. Outputs land at labels_transition.json / samples_transition.jsonl
+# / results_transition/ on the volume so v1 results stay intact for
+# side-by-side comparison.
+.PHONY: label-manip-v2 probe-manip-v2 samples-manip-v2 \
+        resume-manip-v2 all-manip-v2 pull-manip-v2
+
+label-manip-v2:
+	$(MN) --task manipulation --stage label --label-variant transition $(LABEL_FLAGS)
+
+probe-manip-v2:
+	$(MN) --task manipulation --stage probe --label-variant transition $(PROBE_FLAGS)
+
+samples-manip-v2:
+	$(MN) --task manipulation --stage samples --label-variant transition
+
+resume-manip-v2: label-manip-v2 probe-manip-v2
+
+# all-manip-v2 does NOT regen the model stage (which is variant-agnostic).
+# Run `make data-manip` first if you don't have a corpus yet.
+all-manip-v2: label-manip-v2 probe-manip-v2
+
+pull-manip-v2:
+	$(MN) --task manipulation --stage download --label-variant transition
+
+# ----- deception ----------------------------------------------------------
+.PHONY: data-decep label-decep probe-decep resume-decep all-decep pull-decep
+
+data-decep:
+	$(DE) --task deception --stage model $(MODEL_FLAGS)
+
+label-decep:
+	$(DE) --task deception --stage label $(LABEL_FLAGS)
+
+probe-decep:
+	$(DE) --task deception --stage probe $(PROBE_FLAGS)
+
+resume-decep: label-decep probe-decep
+
+all-decep:
+	$(DE) --task deception --stage all $(MODEL_FLAGS) $(LABEL_FLAGS) $(PROBE_FLAGS)
+
+pull-decep:
+	$(DE) --task deception --stage download
+
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
 
@@ -130,7 +250,7 @@ prof-pull:
 	$(P) --stage download
 
 # ----- QC: peek at samples.jsonl after labeling ---------------------------
-.PHONY: qc-oneshot qc-explicit qc-syco
+.PHONY: qc-oneshot qc-explicit qc-syco qc-sandbag qc-sandbag-by-mode qc-sandbag-by-difficulty
 
 qc-oneshot:
 	@echo "=== substring_oneshot positive-rate by kind ==="
@@ -147,6 +267,77 @@ qc-syco:
 	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.has_positive)] | length)})' \
 	    data/reward_hack/sycophancy/samples.jsonl
 
+qc-sandbag:
+	@echo "=== sandbag positive-rate by kind ==="
+	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length)})' \
+	    data/sandbag/sandbag/samples.jsonl
+
+qc-sandbag-by-mode:
+	@echo "=== sandbag positive-rate broken down by sandbag_mode (hack only) ==="
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | group_by(.sandbag_mode) | \
+	        map({mode: .[0].sandbag_mode, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/sandbag/sandbag/samples.jsonl
+
+qc-sandbag-by-difficulty:
+	@echo "=== sandbag positive-rate broken down by difficulty x kind ==="
+	@jq -s 'group_by(.difficulty + "/" + .prompt_kind) | \
+	        map({bucket: (.[0].difficulty + "/" + .[0].prompt_kind), n: length, \
+	             n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/sandbag/sandbag/samples.jsonl
+
+.PHONY: qc-sandbag-v2 qc-sandbag-by-mode-v2 qc-sandbag-compare
+
+qc-sandbag-v2:
+	@echo "=== sandbag v2 (transition) positive-rate by kind ==="
+	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/sandbag/sandbag/samples_transition.jsonl
+
+qc-sandbag-by-mode-v2:
+	@echo "=== sandbag v2 (transition) positive-rate by sandbag_mode (hack only) ==="
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | group_by(.sandbag_mode) | \
+	        map({mode: .[0].sandbag_mode, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/sandbag/sandbag/samples_transition.jsonl
+
+qc-sandbag-compare:
+	@echo "=== v1 (full) vs v2 (transition): per-token positive rate, hack-class ==="
+	@printf "v1 (full)        :  "
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
+	    data/sandbag/sandbag/samples.jsonl
+	@printf "v2 (transition)  :  "
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
+	    data/sandbag/sandbag/samples_transition.jsonl
+
+.PHONY: qc-manip qc-manip-by-tactic
+
+qc-manip:
+	@echo "=== manipulation positive-rate by kind ==="
+	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length)})' \
+	    data/manipulation/manipulation/samples.jsonl
+
+qc-manip-by-tactic:
+	@echo "=== manipulation positive-rate broken down by tactic (hack only) ==="
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | group_by(.tactic) | \
+	        map({tactic: .[0].tactic, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/manipulation/manipulation/samples.jsonl
+
+.PHONY: qc-decep qc-decep-by-category
+
+qc-decep:
+	@echo "=== deception positive-rate by kind ==="
+	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length)})' \
+	    data/deception/deception/samples.jsonl
+
+qc-decep-by-category:
+	@echo "=== deception positive-rate broken down by claim_category (hack only) ==="
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | group_by(.claim_category) | \
+	        map({cat: .[0].claim_category, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/deception/deception/samples.jsonl
+
 # ----- help ---------------------------------------------------------------
 .PHONY: help
 help:
@@ -162,6 +353,39 @@ help:
 	@echo
 	@echo "  make data-all-rh / resume-all-rh / all-all-rh / pull-all-rh"
 	@echo "    same operation across all 3 reward-hack tasks (sequential)"
+	@echo
+	@echo "Sandbagging probe (single task: sandbag):"
+	@echo "  make data-sandbag / label-sandbag / probe-sandbag    v1 (full-span labels)"
+	@echo "  make resume-sandbag                   label + probe (after data is good)"
+	@echo "  make all-sandbag                      full pipeline"
+	@echo "  make pull-sandbag                     download QC + results to ./data + ./results"
+	@echo "  make qc-sandbag                       overall positive-rate by kind"
+	@echo "  make qc-sandbag-by-mode               break down by sandbag_mode (hack only)"
+	@echo "  make qc-sandbag-by-difficulty         break down by difficulty x kind"
+	@echo
+	@echo "Sandbagging v2 (transition-only labels — same corpus as v1):"
+	@echo "  make label-sandbag-v2 / probe-sandbag-v2 / resume-sandbag-v2"
+	@echo "  make all-sandbag-v2                   label + probe (skips model stage)"
+	@echo "  make pull-sandbag-v2                  download v2 artifacts to ./data + ./results"
+	@echo "  make qc-sandbag-v2                    v2 positive-rate by kind"
+	@echo "  make qc-sandbag-by-mode-v2            v2 break down by mode"
+	@echo "  make qc-sandbag-compare               v1 vs v2 hack-class positive-rate"
+	@echo
+	@echo "Manipulation probe (single task: manipulation):"
+	@echo "  make data-manip / label-manip / probe-manip"
+	@echo "  make resume-manip                     label + probe (after data is good)"
+	@echo "  make all-manip                        full pipeline"
+	@echo "  make pull-manip                       download QC + results to ./data + ./results"
+	@echo "  make qc-manip                         overall positive-rate by kind"
+	@echo "  make qc-manip-by-tactic               break down by tactic (hack only)"
+	@echo
+	@echo "Deception probe (single task: deception):"
+	@echo "  make data-decep / label-decep / probe-decep"
+	@echo "  make resume-decep                     label + probe (after data is good)"
+	@echo "  make all-decep                        full pipeline"
+	@echo "  make pull-decep                       download QC + results to ./data + ./results"
+	@echo "  make qc-decep                         overall positive-rate by kind"
+	@echo "  make qc-decep-by-category             break down by claim_category (hack only)"
 	@echo
 	@echo "Profanity probe (legacy):"
 	@echo "  make prof-{all,model,label,probe,elicit,pull}"
