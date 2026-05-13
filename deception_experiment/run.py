@@ -17,10 +17,15 @@ hack-persona completions hit the API.
 
 Run from the repo root::
 
-    modal run deception_experiment/run.py                        # full pipeline
+    modal run deception_experiment/run.py                        # full pipeline (v1 full-span labels)
     modal run deception_experiment/run.py --stage label          # iterate on labeling
     modal run deception_experiment/run.py --stage probe --max-offset 15
     modal run deception_experiment/run.py --stage download       # pull data + results
+
+    # v2: relabel as transition-only spans (corpus + activations are shared
+    # with v1 on the volume; only label + probe stages re-run)
+    modal run deception_experiment/run.py --stage label --label-variant transition
+    modal run deception_experiment/run.py --stage probe --label-variant transition
 """
 
 from __future__ import annotations
@@ -65,16 +70,33 @@ HF_SECRET = modal.Secret.from_name("huggingface_nim", required_keys=["HF_TOKEN"]
 GPU_KIND = "L4"
 
 
-def _task_paths(task: str) -> dict:
+def _task_paths(task: str, label_variant: str = "full") -> dict:
+    """Per-task paths on the Modal volume.
+
+    The corpus and activations are **shared across label variants** —
+    the model stage doesn't depend on labels. The labels / samples /
+    results paths gain a ``_<variant>`` suffix for any non-default
+    variant so v1 (``full``) and later variants (``transition``,
+    future ones) coexist on the same volume without overwriting.
+    """
     base = f"{DATA_DIR}/{task}"
+    if label_variant == "full":
+        suffix = ""
+    else:
+        suffix = f"_{label_variant}"
     return {
         "base": base,
+        "label_variant": label_variant,
         "corpus": f"{base}/corpus.json",
-        "labels": f"{base}/labels.json",
-        "samples": f"{base}/samples.jsonl",
         "activations": f"{base}/activations.pt",
-        "results": f"{base}/results",
+        "labels": f"{base}/labels{suffix}.json",
+        "samples": f"{base}/samples{suffix}.jsonl",
+        "results": f"{base}/results{suffix}",
     }
+
+
+def _variant_suffix(label_variant: str) -> str:
+    return "" if label_variant == "full" else f"_{label_variant}"
 
 
 @app.function(
@@ -127,11 +149,12 @@ def do_label(
     labeler_models: str = "gpt-5.4-mini,gpt-5.4",
     per_model_attempts: int = 2,
     max_total_wait: float = 180.0,
+    label_variant: str = "full",
 ) -> None:
     from deception_experiment.labeling import label_completion_tokens
     from deception_experiment.samples import build_samples_jsonl
 
-    p = _task_paths(task)
+    p = _task_paths(task, label_variant=label_variant)
     label_completion_tokens(
         activations_path=p["activations"],
         corpus_path=p["corpus"],
@@ -141,6 +164,7 @@ def do_label(
         max_workers=max_workers,
         per_model_attempts=per_model_attempts,
         max_total_wait=max_total_wait,
+        label_variant=label_variant,
     )
     build_samples_jsonl(
         activations_path=p["activations"],
@@ -152,11 +176,11 @@ def do_label(
 
 
 @app.function(volumes={DATA_DIR: DATA_VOLUME}, timeout=60 * 5, cpu=2.0)
-def do_samples(task: str = "deception") -> None:
+def do_samples(task: str = "deception", label_variant: str = "full") -> None:
     """Rebuild samples.jsonl from existing corpus/labels without re-labeling."""
     from deception_experiment.samples import build_samples_jsonl
 
-    p = _task_paths(task)
+    p = _task_paths(task, label_variant=label_variant)
     build_samples_jsonl(
         activations_path=p["activations"],
         labels_path=p["labels"],
@@ -177,10 +201,11 @@ def do_probe(
     num_epochs: int = 200,
     neg_per_pos: float = 10.0,
     run_name: str = "",
+    label_variant: str = "full",
 ) -> str:
     from deception_experiment.probes import run_full_sweep
 
-    p = _task_paths(task)
+    p = _task_paths(task, label_variant=label_variant)
     rn = run_full_sweep(
         activations_path=p["activations"],
         labels_path=p["labels"],
@@ -196,44 +221,52 @@ def do_probe(
     return rn
 
 
-def _pull_results(task: str, dest_root: str) -> None:
+def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> None:
     """Pull the per-task results subtree to ./{dest_root}/deception/{task}/."""
     import os
     import subprocess
 
+    suffix = _variant_suffix(label_variant)
     dest = f"{dest_root}/deception/{task}"
     os.makedirs(dest, exist_ok=True)
+    remote = f"{task}/results{suffix}"
     rc = subprocess.run(
         [
             "modal", "volume", "get", "--force", "deception-data",
-            f"{task}/results", dest,
+            remote, dest,
         ]
     ).returncode
     if rc != 0:
-        print(f"  skipped {task}/results (not on volume yet)")
+        print(f"  skipped {remote} (not on volume yet)")
     else:
-        print(f"  pulled {task}/results -> ./{dest}/results")
+        print(f"  pulled {remote} -> ./{dest}/results{suffix}")
 
 
-def _pull_data(task: str, dest_root: str = "data") -> None:
-    """Pull the per-task QC artifacts (corpus / labels / samples)."""
+def _pull_data(task: str, dest_root: str = "data", label_variant: str = "full") -> None:
+    """Pull the per-task QC artifacts (corpus, plus variant-specific labels / samples)."""
     import os
     import subprocess
 
+    suffix = _variant_suffix(label_variant)
     dest = f"{dest_root}/deception/{task}"
     os.makedirs(dest, exist_ok=True)
-    for remote in ("corpus.json", "labels.json", "samples.jsonl"):
-        local = f"{dest}/{remote}"
+    files = [
+        ("corpus.json", "corpus.json"),
+        (f"labels{suffix}.json", f"labels{suffix}.json"),
+        (f"samples{suffix}.jsonl", f"samples{suffix}.jsonl"),
+    ]
+    for remote_name, local_name in files:
+        local = f"{dest}/{local_name}"
         rc = subprocess.run(
             [
                 "modal", "volume", "get", "--force", "deception-data",
-                f"{task}/{remote}", local,
+                f"{task}/{remote_name}", local,
             ]
         ).returncode
         if rc != 0:
-            print(f"  skipped {task}/{remote} (not on volume yet)")
+            print(f"  skipped {task}/{remote_name} (not on volume yet)")
         else:
-            print(f"  pulled {task}/{remote} -> ./{local}")
+            print(f"  pulled {task}/{remote_name} -> ./{local}")
 
 
 @app.local_entrypoint()
@@ -256,6 +289,7 @@ def main(
     labeler_models: str = "gpt-5.4-mini,gpt-5.4",
     per_model_attempts: int = 2,
     max_total_wait: float = 180.0,
+    label_variant: str = "full",
     download: bool = True,
     download_dir: str = "results",
 ) -> None:
@@ -263,6 +297,10 @@ def main(
 
     task in {"deception"}.
     stage in {"all", "model", "label", "samples", "probe", "download"}.
+    label_variant in {"full" (v1, every deception token), "transition"
+        (v2, only the prefix of each lie commitment)}. The corpus and
+        activations are shared across variants — switching variants
+        only re-runs the label / probe stages on the same volume.
     """
     valid_tasks = ("deception",)
     if task not in valid_tasks:
@@ -271,6 +309,13 @@ def main(
     valid_stages = ("all", "model", "label", "samples", "probe", "download")
     if stage not in valid_stages:
         raise SystemExit(f"unknown stage: {stage!r} (must be one of {valid_stages})")
+
+    valid_variants = ("full", "transition")
+    if label_variant not in valid_variants:
+        raise SystemExit(
+            f"unknown label_variant: {label_variant!r} "
+            f"(must be one of {valid_variants})"
+        )
 
     stages = ("model", "label", "probe") if stage == "all" else (stage,)
 
@@ -288,32 +333,43 @@ def main(
             extract_batch_size=extract_batch_size,
         )
     if "label" in stages:
-        print(f"=== [{task}] stage 2: parallel OpenAI token labeling (+ samples.jsonl) ===")
+        print(
+            f"=== [{task}] stage 2 (variant={label_variant!r}): "
+            f"parallel OpenAI token labeling (+ samples.jsonl) ==="
+        )
         do_label.remote(
             task=task,
             max_workers=label_workers,
             labeler_models=labeler_models,
             per_model_attempts=per_model_attempts,
             max_total_wait=max_total_wait,
+            label_variant=label_variant,
         )
     if "samples" in stages:
-        print(f"=== [{task}] rebuilding samples.jsonl from existing corpus/labels ===")
-        do_samples.remote(task=task)
+        print(
+            f"=== [{task}] (variant={label_variant!r}) "
+            f"rebuilding samples.jsonl from existing corpus/labels ==="
+        )
+        do_samples.remote(task=task, label_variant=label_variant)
     if "probe" in stages:
-        print(f"=== [{task}] stage 3: GPU-vectorized probe sweep (full + deception-only subsets) ===")
+        print(
+            f"=== [{task}] stage 3 (variant={label_variant!r}): "
+            f"GPU-vectorized probe sweep (full + deception-only subsets) ==="
+        )
         do_probe.remote(
             task=task,
             max_offset=max_offset,
             num_epochs=num_epochs,
             neg_per_pos=neg_per_pos,
             run_name=run_name,
+            label_variant=label_variant,
         )
 
     if stage == "download" or (download and stage in ("all", "probe", "label", "samples")):
-        print(f"=== [{task}] downloading QC data (corpus / labels / samples) ===")
-        _pull_data(task, "data")
+        print(f"=== [{task}] (variant={label_variant!r}) downloading QC data ===")
+        _pull_data(task, "data", label_variant=label_variant)
         if stage in ("download", "all", "probe"):
-            print(f"=== [{task}] downloading probe results ===")
-            _pull_results(task, download_dir)
+            print(f"=== [{task}] (variant={label_variant!r}) downloading probe results ===")
+            _pull_results(task, download_dir, label_variant=label_variant)
 
     print("done.")

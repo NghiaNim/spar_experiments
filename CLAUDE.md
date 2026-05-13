@@ -29,7 +29,7 @@ The **deception probe** (`deception_experiment/`, entrypoint `deception_experime
 
 The five experiments share the same probe machinery (each is a copy-and-modify, not an import). They write to **separate Modal volumes** (`harm-probe-data`, `reward-hack-data`, `sandbag-data`, `manipulation-data`, `deception-data`) so artifacts don't collide. The profanity probe uses **Gemini**; the rest use **OpenAI** (`gpt-5.4-mini` cascade — Gemini's per-minute rate limits were too tight for the larger labeling loads). **All new misalignment experiments default to OpenAI**, not Gemini.
 
-Sandbag and manipulation also implement two label variants: `full` (every sandbag/tactic token positive — the v1 spec) and `transition` (only the first ~10 tokens of each commitment — the v2 spec, the regime where lookahead PR-AUC is informative). Variants are selected by the `--label-variant {full,transition}` flag and write to suffixed paths so v1 and v2 coexist.
+Sandbag, manipulation, and deception all implement two label variants: `full` (every sandbag/tactic/deception token positive — the v1 spec) and `transition` (only the first ~10 tokens of each commitment — the v2 spec, the regime where lookahead PR-AUC is informative). Variants are selected by the `--label-variant {full,transition}` flag and write to suffixed paths so v1 and v2 coexist. Deception's transition prompt also explicitly handles the **verbose-refusal false positive** flagged in `writeups/deception_v1.md` §5b — responses that mention the false-claim topic while denying it return an empty array.
 
 Future planned experiments (in `TODO.md`, prioritized): deceptive alignment, self-preservation/corrigibility.
 
@@ -116,14 +116,18 @@ Currently a single task: `manipulation`. Per-task artifacts live at `./data/mani
 ### Deception probe (`deception_experiment/`)
 
 ```bash
-modal run deception_experiment/run.py                                          # full pipeline
+modal run deception_experiment/run.py                                          # full pipeline (v1 full-span labels)
 modal run deception_experiment/run.py --stage model     --samples-per-prompt 6
 modal run deception_experiment/run.py --stage label                            # also rebuilds samples.jsonl
 modal run deception_experiment/run.py --stage probe     --max-offset 15
 modal run deception_experiment/run.py --stage download                         # pull data + results
+
+# v2: transition-only labels (corpus + activations are shared with v1)
+modal run deception_experiment/run.py --stage label --label-variant transition
+modal run deception_experiment/run.py --stage probe --label-variant transition
 ```
 
-Currently a single task: `deception`. Per-task artifacts live at `./data/deception/{task}/` and `./results/deception/{task}/`.
+Currently a single task: `deception`. Per-task artifacts live at `./data/deception/{task}/` and `./results/deception/{task}/` for `full`, and `./data/deception/{task}/labels_transition.json` + `./results/deception/{task}/results_transition/` for `transition`.
 
 There is no test suite, linter, or build step in this repo. QC is done by inspecting `data/samples.jsonl` with `jq` (recipes in README.md) and by reading the heatmaps under `results/`.
 

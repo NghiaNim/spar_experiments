@@ -3,8 +3,8 @@
 # Five experiments:
 #   - reward-hack probe (3 task variants: oneshot / explicit / syco)
 #   - sandbagging probe (single task: sandbag, with v1/v2 label variants)
-#   - manipulation probe (single task: manipulation)
-#   - deception probe (single task: deception)
+#   - manipulation probe (single task: manipulation, with v1/v2 label variants)
+#   - deception probe (single task: deception, with v1/v2 label variants)
 #   - profanity probe (legacy, prefixed `prof-`)
 #
 # The most common workflow once data is already on the Modal volume:
@@ -228,6 +228,32 @@ all-decep:
 pull-decep:
 	$(DE) --task deception --stage download
 
+# ----- deception v2 (transition-only labels) ------------------------------
+# Same corpus + activations as v1 — switching variants only re-runs label
+# + probe. Outputs land at labels_transition.json / samples_transition.jsonl
+# / results_transition/ on the volume so v1 results stay intact for
+# side-by-side comparison.
+.PHONY: label-decep-v2 probe-decep-v2 samples-decep-v2 \
+        resume-decep-v2 all-decep-v2 pull-decep-v2
+
+label-decep-v2:
+	$(DE) --task deception --stage label --label-variant transition $(LABEL_FLAGS)
+
+probe-decep-v2:
+	$(DE) --task deception --stage probe --label-variant transition $(PROBE_FLAGS)
+
+samples-decep-v2:
+	$(DE) --task deception --stage samples --label-variant transition
+
+resume-decep-v2: label-decep-v2 probe-decep-v2
+
+# all-decep-v2 does NOT regen the model stage (which is variant-agnostic).
+# Run `make data-decep` first if you don't have a corpus yet.
+all-decep-v2: label-decep-v2 probe-decep-v2
+
+pull-decep-v2:
+	$(DE) --task deception --stage download --label-variant transition
+
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
 
@@ -310,7 +336,7 @@ qc-sandbag-compare:
 	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
 	    data/sandbag/sandbag/samples_transition.jsonl
 
-.PHONY: qc-manip qc-manip-by-tactic
+.PHONY: qc-manip qc-manip-by-tactic qc-manip-v2 qc-manip-by-tactic-v2 qc-manip-compare
 
 qc-manip:
 	@echo "=== manipulation positive-rate by kind ==="
@@ -324,7 +350,28 @@ qc-manip-by-tactic:
 	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
 	    data/manipulation/manipulation/samples.jsonl
 
-.PHONY: qc-decep qc-decep-by-category
+qc-manip-v2:
+	@echo "=== manipulation v2 (transition) positive-rate by kind ==="
+	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/manipulation/manipulation/samples_transition.jsonl
+
+qc-manip-by-tactic-v2:
+	@echo "=== manipulation v2 (transition) positive-rate by tactic (hack only) ==="
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | group_by(.tactic) | \
+	        map({tactic: .[0].tactic, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/manipulation/manipulation/samples_transition.jsonl
+
+qc-manip-compare:
+	@echo "=== v1 (full) vs v2 (transition): per-token positive rate, hack-class ==="
+	@printf "v1 (full)        :  "
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
+	    data/manipulation/manipulation/samples.jsonl
+	@printf "v2 (transition)  :  "
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
+	    data/manipulation/manipulation/samples_transition.jsonl
+
+.PHONY: qc-decep qc-decep-by-category qc-decep-v2 qc-decep-by-category-v2 qc-decep-compare
 
 qc-decep:
 	@echo "=== deception positive-rate by kind ==="
@@ -337,6 +384,27 @@ qc-decep-by-category:
 	        map({cat: .[0].claim_category, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
 	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
 	    data/deception/deception/samples.jsonl
+
+qc-decep-v2:
+	@echo "=== deception v2 (transition) positive-rate by kind ==="
+	@jq -s 'group_by(.prompt_kind) | map({kind: .[0].prompt_kind, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/deception/deception/samples_transition.jsonl
+
+qc-decep-by-category-v2:
+	@echo "=== deception v2 (transition) positive-rate by claim_category (hack only) ==="
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | group_by(.claim_category) | \
+	        map({cat: .[0].claim_category, n: length, n_pos: ([.[] | select(.n_pos > 0)] | length), \
+	             mean_frac_pos: ((map(.frac_pos) | add) / length)})' \
+	    data/deception/deception/samples_transition.jsonl
+
+qc-decep-compare:
+	@echo "=== v1 (full) vs v2 (transition): per-token positive rate, hack-class ==="
+	@printf "v1 (full)        :  "
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
+	    data/deception/deception/samples.jsonl
+	@printf "v2 (transition)  :  "
+	@jq -s '[.[] | select(.prompt_kind=="hack")] | {n: length, mean_frac_pos: ((map(.frac_pos) | add) / length)}' \
+	    data/deception/deception/samples_transition.jsonl
 
 # ----- help ---------------------------------------------------------------
 .PHONY: help
@@ -379,6 +447,14 @@ help:
 	@echo "  make qc-manip                         overall positive-rate by kind"
 	@echo "  make qc-manip-by-tactic               break down by tactic (hack only)"
 	@echo
+	@echo "Manipulation v2 (transition-only labels — same corpus as v1):"
+	@echo "  make label-manip-v2 / probe-manip-v2 / resume-manip-v2"
+	@echo "  make all-manip-v2                     label + probe (skips model stage)"
+	@echo "  make pull-manip-v2                    download v2 artifacts to ./data + ./results"
+	@echo "  make qc-manip-v2                      v2 positive-rate by kind"
+	@echo "  make qc-manip-by-tactic-v2            v2 break down by tactic"
+	@echo "  make qc-manip-compare                 v1 vs v2 hack-class positive-rate"
+	@echo
 	@echo "Deception probe (single task: deception):"
 	@echo "  make data-decep / label-decep / probe-decep"
 	@echo "  make resume-decep                     label + probe (after data is good)"
@@ -386,6 +462,14 @@ help:
 	@echo "  make pull-decep                       download QC + results to ./data + ./results"
 	@echo "  make qc-decep                         overall positive-rate by kind"
 	@echo "  make qc-decep-by-category             break down by claim_category (hack only)"
+	@echo
+	@echo "Deception v2 (transition-only labels — same corpus as v1):"
+	@echo "  make label-decep-v2 / probe-decep-v2 / resume-decep-v2"
+	@echo "  make all-decep-v2                     label + probe (skips model stage)"
+	@echo "  make pull-decep-v2                    download v2 artifacts to ./data + ./results"
+	@echo "  make qc-decep-v2                      v2 positive-rate by kind"
+	@echo "  make qc-decep-by-category-v2          v2 break down by claim_category"
+	@echo "  make qc-decep-compare                 v1 vs v2 hack-class positive-rate"
 	@echo
 	@echo "Profanity probe (legacy):"
 	@echo "  make prof-{all,model,label,probe,elicit,pull}"

@@ -278,7 +278,7 @@ monitoring) actually need.
 
 ## Appendix — file pointers
 
-All figures live under `writeup/figures/<task>_<subset>/` and originate
+All figures live under `writeups/figures/<task>_<subset>/` and originate
 from `results/reward_hack/<task>/results/np10_mo10_ep200/<subset>/`.
 Per-task `results.json` (the source of every number in the tables above)
 sits in the same directory. Source completions: `data/reward_hack/<task>/samples.jsonl`.

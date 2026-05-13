@@ -46,11 +46,11 @@ cascade) for token labeling — Gemini's per-minute rate limits were too
 tight for those loads. The profanity probe stays on Gemini. **Default
 any new misalignment experiment to OpenAI.**
 
-Sandbag and manipulation also support `--label-variant {full,transition}`:
-`full` marks every behavior token (the v1 spec); `transition` marks only
-the first ~10 tokens of each commitment, which is the regime where
-lookahead PR-AUC is informative. Variants write to suffixed paths so v1
-and v2 coexist for side-by-side comparison.
+Sandbag, manipulation, and deception all support `--label-variant
+{full,transition}`: `full` marks every behavior token (the v1 spec);
+`transition` marks only the first ~10 tokens of each commitment, which
+is the regime where lookahead PR-AUC is informative. Variants write to
+suffixed paths so v1 and v2 coexist for side-by-side comparison.
 
 For each task, the resulting `layer × offset` grid shows *where* and *how
 early* the model's residual stream represents that it's about to emit a
