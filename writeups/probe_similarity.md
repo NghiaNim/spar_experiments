@@ -153,12 +153,18 @@ Neighboring cells (k=0 vs k=1) are essentially the same direction
 specializing on the activation features predictive of that specific
 lookahead horizon.
 
-The two behaviors' rotation patterns are remarkably similar — both
-hit cos ~0.65 at k=3, cos ~0.50 at k=5, etc. So while the absolute
-directions differ across behaviors, the *rate at which the direction
-rotates with offset* is shared. This is a more subtle convergence
-finding: behaviors don't share the misalignment direction, but they
-share the *geometry of how that direction evolves with lookahead*.
+The two behaviors' rotation patterns share a qualitative shape (smooth
+monotonic decay from cos≈0.9 at k=1 to cos≈0.2–0.3 at k=10), **but the
+rates are not identical**. Mean cos at k=3 is 0.69 (decep 0.715, manip
+0.673), at k=5 it's 0.53 (decep 0.564, manip 0.491); the gap between
+the two trajectories grows from <0.03 at k=1–2 to ~0.10 at k=7–10.
+**Manipulation rotates faster than deception** (cos = 0.198 at k=10 vs
+0.292) — and this mirrors the lookahead-horizon gap in the ROC-AUC
+table (manipulation's per-token ROC decays faster than deception's
+across offsets). So behaviors don't share the misalignment direction
+*or* the rotation rate, but they share the *qualitative geometry of how
+the direction evolves with lookahead*, and the rotation rate tracks the
+behavior's ROC-AUC decay.
 
 ### 3b. Across layers at k=0 (the headline offset)
 

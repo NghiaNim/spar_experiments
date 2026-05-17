@@ -193,7 +193,7 @@ Across the three v2 experiments — sandbag, manipulation, deception — the str
 | experiment (v2, within-hack, k=0) | nominally best L (ROC-AUC) | best-anywhere drift across k=0–10 | spread within L7–L13 |
 | --- | --- | --- | --- |
 | sandbag      | **L9** (0.746) | L7 (k=0) → L5 (k=1–3) → L12 (k=4+) | 0.057 ROC |
-| manipulation | **L12** (0.673) | L12 (k=0) → L11 (k=3) → L15–L16 (k=5+) | 0.044 ROC |
+| manipulation | **L12** (0.673) | L12 (k=0) → L11 (k=3) → varies L10–L16 (k=5+: L16/L10/L16/L16/L12/L15) | 0.044 ROC |
 | deception    | **L9** (0.751) | L9 (k=0–5) → L8 (k=6–10) | 0.079 ROC |
 
 For comparison, under v1 (full-span labels) the dominant layer was:
@@ -232,7 +232,7 @@ For a hidden dimension of H ≈ 2048, two random unit vectors have expected cosi
 | cos(W_decep[9, 0], W_decep[9, k])  | +0.91 | +0.80 | +0.72 | +0.56 | +0.46 | +0.29 |
 | cos(W_manip[9, 0], W_manip[9, k])  | +0.90 | +0.78 | +0.67 | +0.49 | +0.36 | +0.20 |
 
-Both behaviors trace **the same rotation pattern** — the gap is ≤0.10 at every k, and the rotation rates are within 0.05 at every cell. So while the absolute directions differ across behaviors, the *geometry of how the probe direction evolves with lookahead horizon* is shared. This is the real cross-experiment regularity in the data: not a shared misalignment direction, but a shared rotation geometry. Whether this reflects a deeper computational property of mid-stack activations, or simply that smooth functions of offset produce similar decay rates, is unclear and worth follow-up.
+Both behaviors follow the same qualitative decay shape, **but the rates are not identical**. The gap between the two trajectories grows from <0.03 at k=1–2 to ~0.10 at k=7–10 (e.g. |Δ| = 0.014 at k=1, 0.081 at k=4, 0.111 at k=8). **Manipulation's direction rotates faster** (cos = 0.198 at k=10 vs deception's 0.292), which mirrors the headline ROC-AUC lookahead-horizon gap (manipulation's per-token probe decays faster than deception's across offsets in §4.2). So the cross-experiment finding is a **shared decay shape with different rates**, not a shared rate: same qualitative trajectory, with manipulation rotating away from its k=0 direction more aggressively than deception does. Behaviors whose ROC-AUC stays higher at large k also have probe directions that rotate more slowly — these two metrics agree.
 
 Across layers at k=0, the L9 direction is genuinely layer-specific: cos(W[9,0], W[L,0]) ≤ 0.46 for any L ≠ 9 (highest at L8, L10). So the "best layer" in a probe sweep is not arbitrary — adjacent layers encode meaningfully different directions.
 
@@ -246,28 +246,44 @@ A small consistency note: for sandbag, the best-PR-AUC layer at k=0 (L7) differs
 
 ### 4.2 Lookahead horizons by behavior
 
-The decay shape of the probe across offsets is informative about how persistent the commitment representation is in the residual stream:
+The decay shape of the probe across offsets is informative about how persistent the commitment representation is in the residual stream. **ROC-AUC** (the ranking metric, invariant to class imbalance) tells one story; **PR-AUC** (which collapses as base rate drops) tells a different one. Both are below.
+
+**Within-hack ROC-AUC at best layer, across offsets k=0..10:**
 
 ```
-within-hack ROC-AUC at best layer, across offsets k=0..10
-
                    k=0   k=2   k=5   k=10
-substring_oneshot  1.00  0.93  0.32   0.21   (lexical, sharp decay)
-sycophancy         0.93  0.91  0.83   0.74   (semantic, slow decay)
-sandbag v2 (L9)    0.75  0.69  0.62   0.55   (steep — fleeting transition)
-manipulation v2    0.67  0.65  0.61   0.55   (gentle — register persists)
-deception v2 (L9)  0.75  0.74  0.68   0.64   (very gentle — long horizon)
+substring_oneshot  1.00  0.98  0.85  0.77
+sycophancy         0.94  0.94  0.89  0.82
+sandbag v2         0.75  0.69  0.62  0.55
+manipulation v2    0.67  0.65  0.61  0.55
+deception v2       0.75  0.74  0.68  0.64
 ```
 
-We **hypothesize** three distinct shapes (subject to confirmation by additional behaviors — this paper has six data points across three categories and the taxonomy is post-hoc):
+**Within-hack best-anywhere PR-AUC, with positive base rate in parentheses:**
 
-- **Lexical / surface (substring):** the next 1–3 tokens are deterministically the marker; far-future tokens are not — sharp decay after k≈3.
-- **Semantic / register (sycophancy, manipulation, deception):** the underlying judgment ("agree with the wrong claim", "be in sales mode", "assert the lie") persists across many tokens, so the probe at *t* projects forward usefully.
-- **Fleeting transition (sandbag v2):** the commitment moment is brief by construction (a 10-token prefix); 5 tokens before that moment, the residual stream hasn't yet "decided" — steeper decay than the register signals.
+```
+                   k=0           k=2          k=5          k=10
+substring_oneshot  1.00 (11.7%)  0.93 (8.3%)  0.38 (4.7%)  0.18 (4.8%)
+sycophancy         0.57 (3.3%)   0.38 (3.1%)  0.19 (2.9%)  0.20 (2.4%)
+sandbag v2         0.38 (16.3%)  0.35 (16.1%) 0.28 (15.7%) 0.18 (14.3%)
+manipulation v2    0.31 (19.5%)  0.30 (19.7%) 0.26 (20.0%) 0.25 (20.2%)
+deception v2       0.41 (21.1%)  0.43 (21.2%) 0.35 (21.3%) 0.37 (21.4%)
+```
 
-Caveat: manipulation v2 and deception v2 each have non-monotonic per-layer ROC trajectories (deception L7→L8→L9 is 0.737→0.715→0.751 at k=0, manipulation L10–L13 jumps around), so neither cleanly fits a single "slow decay" shape. The taxonomy is intended as a hypothesis for future behaviors (deceptive alignment, self-preservation) to test, not as a confirmed result from the present data.
+Three observations from the contrast between the two metrics:
 
-Within the three v2 core behaviors, deception's lift +0.10 at k=10 is the slowest decay; the best-anywhere ROC-AUC at k=10 (0.693 at L8) matches v1's L16 number, so the long-range signal moved *down* the stack under the relabel without weakening. This makes deception the **strongest candidate of the three core behaviors** to build a rollout-level early-warning detector on first. *However*, sycophancy `hack_prompts/` ROC-AUC at k=10 is 0.824 (L9, 2.4% base rate, PR-AUC lift +0.095); over the full set of behaviors, sycophancy has the longest lookahead horizon, not deception. The "longest horizon" claim is scoped to the three transition-labeled core behaviors.
+1. **At the ROC-AUC level, all five behaviors have a similar qualitative shape: high at k=0, smooth decay through k=10.** Reward-hacking probes stay above 0.77 even at k=10. The three v2 core behaviors stay in the 0.55–0.65 range at k=10. The "substring is qualitatively different (lexical, sharp decay)" interpretation we previously made is **false at the ROC-AUC level** — substring's ranking power degrades only modestly with offset (1.00 → 0.77).
+2. **At the PR-AUC level, reward-hacking probes collapse much faster.** Substring k=10 PR-AUC is 0.18 against base rate 4.8% — a 3.8× lift but an 80% drop from the k=0 ceiling. This is a base-rate effect: as the offset grows, the positive rate falls (positives shift earlier in the future window), and rare-event PR-AUC is inherently fragile. **The "sharp decay" finding for substring is largely a PR-AUC artifact of falling base rate, not a ROC-AUC finding about feature persistence.**
+3. **The three v2 core behaviors have *higher* base rates** (~14–21%) and *lower* peak PR-AUC (~0.31–0.41), so their PR-AUC decay is gentler in relative terms. Deception is the steadiest on both metrics — ROC stays above 0.64 and PR stays above 0.35 through k=10.
+
+We **hypothesize** that the relevant decay-shape distinction is not "lexical vs semantic vs fleeting" (the previous reading was an artifact of the PR-AUC mislabeling) but rather:
+
+- **Stable high-ROC across offsets** (reward hacking, deception) — once the model has committed to the behavior at activation *t*, the per-token probe at *t* ranks correctly which future tokens belong to the commitment span for many tokens forward.
+- **Smoothly decaying ROC** (sandbag, manipulation) — the commitment representation rotates faster with offset; by k=10 the probe is near chance.
+
+This is one hypothesis; with six data points across three categories the taxonomy is post-hoc and should be tested by future behaviors (deceptive alignment, self-preservation). Caveat: manipulation v2 and deception v2 each have non-monotonic per-layer ROC trajectories (deception L7→L8→L9 is 0.737→0.715→0.751 at k=0, manipulation L10–L13 jumps around), so neither cleanly fits a single "decay" shape.
+
+Within the three v2 core behaviors, deception's L9 lift +0.10 at k=10 is the slowest decay; the best-anywhere ROC-AUC at k=10 (0.693 at L8) matches v1's L16 number, so the long-range signal moved *down* the stack under the relabel without weakening. This makes deception the **strongest candidate of the three core behaviors** to build a rollout-level early-warning detector on first. *However*, sycophancy `hack_prompts/` ROC-AUC at k=10 is 0.824 (L9, 2.4% base rate); over the full set of behaviors, sycophancy has the longest lookahead horizon. Substring's k=10 ROC of 0.77 is also higher than any of the three v2 core behaviors. The "longest horizon" claim is therefore scoped to the *three transition-labeled v2 core behaviors* — the reward-hacking probes have higher ROC throughout but at much lower base rates where PR-AUC paints a different picture.
 
 ### 4.3 Register vs commitment: why the v2 framing is diagnostic
 

@@ -47,7 +47,7 @@ expected:
   of manipulation hack completions do**. With ~24 test completions
   per experiment and one-or-zero negative examples, the within-hack
   completion-level probe is essentially a degenerate task. PR-AUC
-  numbers are all >0.96 (driven by the saturated baseline) and lifts
+  numbers are all >0.93 (driven by the saturated baseline) and lifts
   are +0.000 to +0.040 (driven by 1-2 misclassified completions out
   of 24). **For manipulation, the probe is mathematically
   undefined** — every test completion is positive, so ROC-AUC = NaN.
@@ -155,7 +155,7 @@ Notes:
   mathematically undefined and PR-AUC is forced to 1.0 by
   construction. We cannot fit or evaluate a within-hack completion-
   level probe for manipulation.
-- **Sandbag and deception:** PR-AUC numbers are all >0.95, but
+- **Sandbag and deception:** PR-AUC numbers are all >0.93, but
   baseline (positive rate) is 0.958, so lifts are tiny. ROC-AUC
   varies wildly (0.50–0.96) across N because performance is
   dominated by a single misclassified completion at the right

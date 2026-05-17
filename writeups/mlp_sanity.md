@@ -101,13 +101,15 @@ This strengthens three claims in the paper:
 
 The MLP slightly *underperforming* the linear probe is also worth
 noting: it's evidence of mild overfitting on the training set. With
-~7k–11k positive-weighted training tokens and a 64k-parameter MLP
-(2048 → 256 → 1, plus biases), the MLP has roughly one parameter per
-training token. The linear probe has ~2k parameters — much better
-matched to the data.
+~7k–11k positive-weighted training tokens and a **~525k-parameter MLP**
+(2048×256 + 256×1 + biases ≈ 524,801), the MLP has roughly **50–75
+parameters per training token** — substantially over-parameterized.
+The linear probe has ~2k parameters — better matched to the data.
 
 If anything, this argues that we should resist the temptation to use
-larger non-linear probes; the data is too small to benefit.
+larger non-linear probes; the data is too small to benefit, and the
+512k-param MLP is already overfitting modestly relative to its 10k-token
+training set.
 
 ## 4. Limitations
 
