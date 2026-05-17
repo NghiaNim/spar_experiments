@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We train linear probes on the residual-stream activations of a small open-weights language model (`huihui-ai/Llama-3.2-1B-Instruct-abliterated`) to predict, from the activation at token *t*, the label of token *t+k* for **three core misalignment behaviors** — sandbagging, instrumental deception, and manipulation — with two reward-hacking subtasks (specification gaming and sycophancy) as pilot warmups. We find that (i) every behavior leaves a probe-readable trace in the residual stream **before** the offending token is emitted, with lookahead horizons that vary by behavior class; (ii) the strongest probe sits in the **L7–L13 mid-stack band** of a 17-layer model for all three core behaviors, regardless of label variant; switching to a labeling regime that targets only the *prefix of each behavior commitment* migrates sandbagging from top-of-stack (L15) to mid-stack and collapses degenerate baselines for sandbag and deception that inflate naive PR-AUC; and (iii) one of the three behaviors — manipulation — fails to benefit from the transition-only relabel, which we argue is diagnostic: transition framing works for *fleeting-commitment* behaviors (sandbag, deception — confirmed) but appears not to for *sustained-register* behaviors (manipulation — the single informative counterexample). The combined results point toward residual-stream lookahead probes as a viable substrate for runtime misalignment detection, with the layer and decay-shape of the probe informing the right deployment-time framing for each behavior class. All headline numbers are single-seed; multi-seed reruns are listed as the highest-priority follow-up.
+We train linear probes on the residual-stream activations of a small open-weights language model (`huihui-ai/Llama-3.2-1B-Instruct-abliterated`) to predict, from the activation at token *t*, the label of token *t+k* for **three core misalignment behaviors** — sandbagging, instrumental deception, and manipulation — with two reward-hacking subtasks (specification gaming and sycophancy) as pilot warmups. We find that (i) every behavior leaves a probe-readable trace in the residual stream **before** the offending token is emitted, with lookahead horizons that vary by behavior class; (ii) the strongest probe sits in the **L7–L13 mid-stack band** of a 17-layer model for all three core behaviors, regardless of label variant — but cross-experiment cosine similarity of the trained probe directions at the headline cell is **≈+0.02 (at noise floor)**, so the three behaviors share a *compute locus* rather than a shared "I'm misaligning" feature; (iii) one of the three behaviors — manipulation — fails to benefit from the transition-only relabel, which we argue is diagnostic: transition framing works for *fleeting-commitment* behaviors (sandbag, deception — confirmed) but not for *sustained-register* behaviors (manipulation — the informative counterexample); and (iv) per-stratum breakdowns reveal that deception's signal is partly an `invented_statistic` detector (PR-AUC lift +0.53 there vs +0.12 in the weakest category), while sandbag generalizes uniformly across modes. A 2-layer MLP fitted to the same cells matches the linear probe to within 0.012 ROC-AUC, confirming that linear is the right tool. The combined results point toward residual-stream lookahead probes as a viable substrate for runtime misalignment detection, with the layer, decay-shape, and category-mix of each behavior's probe informing the right deployment-time framing. All headline numbers are single-seed; multi-seed reruns are the highest-priority follow-up.
 
 ## 1. Introduction
 
@@ -20,9 +20,11 @@ This work reports a multi-experiment probe sweep across three core misalignment 
 
 1. A unified pipeline that produces a three-behavior probe atlas on the same base model and the same labeler stack, with two reward-hacking pilots for context.
 2. A methodological finding — **transition-only labels** vs naive full-span labels — that resolves a class-presence confound inflating naive PR-AUC for sandbag and deception, and migrates sandbag's best layer from L15 to mid-stack. Manipulation's signal is **already** mid-stack under v1 and does not migrate; deception's signal is **already** mid-stack under v1 (L7) and refines slightly to L9 under v2.
-3. A **mid-stack-band** result: across the three core behaviors, the strongest probe sits in the L7–L13 band — *regardless of label variant*. The narrower "L9 dominates" claim is a single-seed estimate inside a noise band and should not be over-read.
-4. A **negative result** — the transition relabel hurts manipulation — argued as diagnostic of the behavior's *structural shape* (sustained register vs fleeting commitment), with implications for detector framing in deployment.
-5. A characterization of **lookahead horizon by behavior**, scoped to the three core v2 experiments (deception ≈ 10 tokens, sandbag ≈ 5–6 tokens, manipulation ≈ 3–4 tokens). Sycophancy `hack_prompts/` has the longest horizon (ROC-AUC 0.82 at k=10) but is reported as a pilot; its 2.4% base rate makes the PR-AUC harder to read.
+3. A **mid-stack-band** result: across the three core behaviors, the strongest probe sits in the L7–L13 band — *regardless of label variant*. But the trained probe *directions* in that band are near-orthogonal across behaviors (cross-experiment cosine sim ≈ 0.02, statistically indistinguishable from random unit vectors), so the band is a shared **compute locus** rather than a shared **feature**.
+4. A **negative result** — the transition relabel hurts manipulation — argued as diagnostic of the behavior's *structural shape* (sustained register vs fleeting commitment). A follow-up completion-level probe (mean-pool first N tokens) is degenerate on our corpus because within-hack positive-class saturation is 95–100%; the manipulation v2 negative result is therefore a genuine property of the labeling-target × behavior-shape interaction, not a measurement artifact that a coarser aggregator can fix.
+5. A characterization of **lookahead horizon by behavior**, scoped to the three core v2 experiments (deception ≈ 10 tokens, sandbag ≈ 5–6 tokens, manipulation ≈ 3–4 tokens). Sycophancy `hack_prompts/` has the longest horizon (ROC-AUC 0.82 at k=10) but is reported as a pilot.
+6. **Per-stratum analysis** revealing strong category-specific dominance for two of three behaviors: deception's signal is partly an `invented_statistic` detector (PR-AUC lift +0.526 there vs +0.120 in `inverted_causal`), and manipulation's signal is bimodal across tactics (`urgency`/`flattery`/`guilt` PR-AUC lift +0.35–+0.41 vs `scarcity`/`social_proof` +0.13–+0.15). Sandbag is uniform across its four modes (range +0.18 to +0.30) — the cleanest "the probe represents the underlying concept" story of the three.
+7. A **non-linearity sanity check:** a 2-layer MLP at the headline cells matches the linear probe to within 0.012 ROC-AUC across six (behavior, offset) cells, confirming linear probing is the right methodology — the misalignment representation is linearly accessible from the residual stream at the chosen layer.
 
 ## 2. Setup
 
@@ -115,6 +117,19 @@ Two findings worth flagging:
 
 The lift at k=10 (+0.10) is **5× larger than sandbag v2's lift at k=10** (+0.02). The best-anywhere ROC-AUC at k=10 is **0.693 at L8** — exactly matching v1's L16 number, so the long-range signal moved *down* the stack under the relabel without weakening. Note: sycophancy `hack_prompts/` ROC-AUC at k=10 is **0.824** (L9, 2.4% base rate), making sycophancy — not deception — the longest-lookahead probe in the full experimental set. The deception claim is scoped to "amongst the three transition-labeled core behaviors." We discuss deployment implications in Section 5.
 
+**Per-category breakdown: the L9 signal is non-uniform across categories.** We re-trained the within-hack v2 probe on each of the 5 deception categories separately:
+
+| category              | best ROC-AUC (L) | best PR-AUC (L) | PR-lift  |
+| ---                   | ---              | ---             | ---      |
+| `invented_statistic`  | **0.899 (L 9)**  | **0.657 (L 9)** | **+0.526** |
+| `misattributed_quote` | 0.814 (L 8)      | 0.450 (L 9)     | +0.329   |
+| `wrong_recommendation`| 0.635 (L11)      | 0.453 (L11)     | +0.175   |
+| `false_factual`       | 0.705 (L13)      | 0.270 (L 5)     | +0.166   |
+| `inverted_causal`     | 0.692 (L11)      | 0.235 (L11)     | +0.120   |
+
+The overall deception PR-AUC lift of +0.20 is approximately a weighted
+average across this 4.4× spread (best:worst lift). `invented_statistic` is the strongest single-cell finding in our whole atlas — PR-AUC 0.657 at L9, k=0, on a 13% positive base rate — and it pulls the deception headline up. Deployment-relevant: the probe generalizes unevenly across deception types. A reasonable scoping is "L9 represents deception cleanly for invented-statistic and misattributed-quote categories; less cleanly for factual-error / causal / advisory categories." Full per-category writeup: `writeups/per_stratum.md`.
+
 ### 3.4 Manipulation
 
 Hack persona is a sales role told the only metric is conversion; honest persona is a balanced advisor. Tactics rotate over five elements (`urgency`, `scarcity`, `flattery`, `social_proof`, `guilt`).
@@ -132,9 +147,21 @@ What happened? The transition framing assumes the target behavior has a *fleetin
 
 When we ask the probe to localize one soft onset among the surrounding ongoing pitch, the discrimination problem is locally very similar at every token. The v1 question ("is this completion in salesperson mode?") was easier because the answer was a uniform yes/no register flag. **Manipulation's "register" is the real informative signal**, not a class-presence confound.
 
-We argue this is itself a useful finding rather than a methodological miss: the right framing for a manipulation detector is **completion-level / aggregate** ("did the first N tokens come from a manipulation-mode register?"), not transition-level. The v2 result is a control experiment showing that transition-only framing is not universally the right framing for residual-stream misalignment detection. We return to this in Section 5.
+We argue this is itself a useful finding rather than a methodological miss: the right framing for a manipulation detector is **completion-level / aggregate** ("did the first N tokens come from a manipulation-mode register?"), not transition-level — *or so we hypothesized*. We tested this directly (Section 5.2 / `writeups/completion_level.md`) by training a mean-pool-first-N-tokens classifier per (layer, N); the within-hack completion-level probe **is degenerate on this corpus** because 100% of hack-prompted manipulation completions contain at least one positive token. With no negative class in the within-hack test set, ROC-AUC is undefined. So the manipulation v2 negative result is a real property of the labeling target × behavior shape, not a measurement artifact that a coarser aggregator can fix. The right framing for manipulation in this corpus is **tactic-conditioned per-tactic probing** (below).
 
-**The within-hack-vs-`all/` inversion is the smoking gun.** For sandbag and deception, the within-hack and `all/` probes converge on the same best layer with a near-1× lift ratio:
+**Per-tactic breakdown: manipulation is bimodal across tactics.**
+
+| tactic            | best ROC-AUC (L) | best PR-AUC (L) | PR-lift  |
+| ---               | ---              | ---             | ---      |
+| `urgency`         | 0.886 (L 9)      | **0.512 (L 6)** | **+0.412** |
+| `flattery`        | **0.928 (L 8)**  | 0.482 (L 8)     | +0.379   |
+| `guilt`           | 0.820 (L13)      | 0.497 (L13)     | +0.347   |
+| `scarcity`        | 0.711 (L11)      | 0.328 (L11)     | +0.150   |
+| `social_proof`    | 0.697 (L 8)      | 0.357 (L 8)     | +0.133   |
+
+The full-corpus v2 manipulation lift (+0.118) hides a roughly 3× spread across tactics. `urgency`, `flattery`, and `guilt` produce clean per-tactic probes (ROC-AUC 0.82–0.93, PR-lift +0.35–+0.41) — competitive with the strong-stratum deception probes. `scarcity` and `social_proof` are weak (+0.13–+0.15) and have higher per-token positive rates (18–22%), suggesting these tactics manifest as more uniformly-positive completions where there's less variance to predict. Consistent with the "sustained register" interpretation for the weak tactics — and partially undercutting it for the strong tactics, which look more like fleeting commitments at the per-tactic level. Per-stratum writeup: `writeups/per_stratum.md`.
+
+**The within-hack-vs-`all/` inversion is the smoking gun for manipulation's two-signal structure.** For sandbag and deception, the within-hack and `all/` probes converge on the same best layer with a near-1× lift ratio:
 
 | experiment     | within-hack lift @ best L | all/ lift @ best L | best-L (within / all) | all-to-within ratio |
 | ---            | ---                        | ---                  | ---                    | ---                   |
@@ -169,6 +196,30 @@ A reasonable interpretation, **stated as a hypothesis rather than a confirmed re
 A second caveat: the L9-vs-L7 and L9-vs-L8 differences for deception (0.014, 0.036 ROC-AUC respectively) and the L12-vs-L11 / L12-vs-L13 differences for manipulation (0.007, 0.018) are inside the seed-noise band one would expect for a 17-cell sweep. We recommend reading the band rather than the single-cell "winner" until multi-seed reruns are completed.
 
 [Figure 1: ROC-AUC heatmaps for sandbag v2, manipulation v2, deception v2 within-hack. Three side-by-side panels showing the L8–L13 vertical band in each, decaying right-ward.]
+
+### 4.1b Shared *locus*, not shared *feature*
+
+A natural follow-up to the mid-stack-band finding is: do the three behaviors use the *same direction* within that band, or three different directions that happen to live in the same layer range? We saved the trained linear probe weight tensors at every (layer, offset) cell and computed pairwise cosine similarity.
+
+**Cross-experiment cosine similarity at the headline cell (L9, k=0):**
+
+| pair                        | cos(W_a, W_b) |
+| ---                         | ---:          |
+| deception ↔ manipulation    | **+0.020**    |
+| deception ↔ sandbag         | (sandbag probe_weights.pt missing; pending re-run) |
+| manipulation ↔ sandbag      | (pending re-run) |
+
+For a hidden dimension of H ≈ 2048, two random unit vectors have expected cosine similarity ~N(0, 1/√H) ≈ 0 ± 0.022. The observed deception ↔ manipulation similarity of **+0.020 is statistically at the random-direction noise floor**. Across the full (layer × offset) grid, no cell exceeds cosine 0.10; mean cosine across the grid is ≈+0.04 (slight positive bias plausibly explained by both probes partially reading the shared hack-persona register signature at the upper-mid layers).
+
+**The mid-stack band is therefore a shared compute *locus*, not a shared *feature*.** The three behaviors' probes find different directions in the residual stream; they happen to all be linearly accessible at the same layer range. This is a weaker finding than "there is a unified misalignment direction" — which would have been the stronger paper — but it's the honest read of what the data show.
+
+**Internal layer-direction structure is itself informative.** Within each behavior at L9, the probe direction rotates smoothly across offsets: cos(W[9, 0], W[9, k=1]) ≈ 0.90 and decays to ≈0.20–0.30 at k=10. Both behaviors trace the same rotation pattern (decay rate matches to within 0.05 at every offset), so while the absolute directions differ, the *geometry of how the direction evolves with lookahead horizon* appears shared. Across layers at k=0, the L9 direction is genuinely layer-specific: cos(W[9,0], W[L,0]) ≤ 0.46 for any L ≠ 9 (highest at L8, L10).
+
+Full writeup: `writeups/probe_similarity.md`.
+
+### 4.1c MLP-vs-linear sanity
+
+We confirmed that linear probing is the right tool by training a 2-layer MLP (hidden=256, GELU) on the same headline cells (sandbag/decep L9, manip L12, at k=0 and k=5) with the same data, split, and rebalancing as the linear sweep. Across six paired comparisons, the MLP scored within **|ΔROC-AUC| ≤ 0.012** of the linear probe in every cell, and was slightly *worse* on five of six (consistent with mild overfitting on the ~10k-token training sets). The misalignment representation is linearly accessible at the chosen layer. Full writeup: `writeups/mlp_sanity.md`.
 
 ### 4.2 Lookahead horizons by behavior
 
@@ -206,7 +257,7 @@ The sandbag → manipulation → deception spread under the v1→v2 relabel prod
 
 The transition vs full-span distinction is not a quality/effort axis — it's a behavior-structure axis. A practitioner choosing the framing for a *new* misalignment behavior should ask: does the behavior have a sharp opening phrase that the rest of the response follows from, or does it manifest as a continuous register shift? The answer determines the right probe target.
 
-A natural extension we did not run: a third label variant, **aggregate / completion-level**, that pools activations across the first N tokens of a completion and asks "is this completion going to manifest the behavior?" This is the framing that manipulation should have been run under all along (Section 5.2), and it is closer to the deployment-time question for any of the behaviors.
+We tested a natural extension — a **completion-level (aggregate) probe** that mean-pools activations over the first N ∈ {1, 3, 5, 10, 20} tokens of each completion and predicts whether the completion contains *any* positive token (`writeups/completion_level.md`). The result was **degenerate on this corpus**: within-hack, 95.8% of sandbag and deception completions contain ≥1 positive token, and **100% of manipulation completions do**, leaving no within-hack negative class for the probe to fit against. Cross-class (`all/`) the task is trivially separable (ROC-AUC ≈ 1.000 at every N including N=1) but the signal being read is the system-prompt class, not the behavior commitment. The completion-level probe is therefore not a fix for manipulation's v2 negative result — that result reflects a real property of the labeling target × behavior shape interaction.
 
 ### 4.4 The cleanest L0 (embedding) baseline tells us how "lexical" each signal is
 
@@ -232,11 +283,11 @@ Three concrete implications for using probes of this shape as runtime detectors:
 2. **Use mid-stack layers (L9–L13 for this model) for "about to commit" detection;** use top-of-stack layers (L15–L16) for "currently in misaligned register" detection. The two are not interchangeable, and v1-style full-span labels conflate them.
 3. **Pick the lookahead horizon k by behavior type.** k=1–3 is the safe regime for fleeting transitions; k≥5 is useful for semantic / register behaviors.
 
-### 5.2 The aggregate-probe gap
+### 5.2 The aggregate-probe gap (closed)
 
-The v2 manipulation result reveals an important gap in our experimental coverage: we have not run an **aggregate / completion-level** probe variant. The natural setup is to mean-pool activations across the first N tokens of a completion (N ≈ 5–10, before any token-level commitment has been emitted) and train a single classifier per layer on those pooled activations, with per-completion ground truth from the labeler.
+We previously flagged a completion-level / aggregate probe as the most important methodological follow-up — the framing that *should* recover manipulation's signal under the "sustained register" interpretation. We ran it (mean-pool first N ∈ {1,3,5,10,20} tokens, predict per-completion outcome) and the result is reported in §3.4: **degenerate on this corpus**. The within-hack positive-class saturation (95–100%) leaves no within-hack negative class to fit against; the cross-class (`all/`) discrimination reaches ROC-AUC ≈ 1.0 trivially but is reading the system prompt class, not the misalignment commitment. The right framing for manipulation in this corpus turns out to be **per-tactic conditioning**: filtering hack-class completions by tactic and running the existing token-level probe per-tactic recovers strong probes for `urgency` / `flattery` / `guilt` (PR-AUC lift +0.35–0.41) but not for `scarcity` / `social_proof` (+0.13–0.15). See §3.4.
 
-This framing is closer to the deployment question ("flag this trajectory before it manifests the behavior") than the per-token framing we used here, and we expect it to recover or exceed the v1 manipulation lift while preserving the mid-stack layer signal. We flag this as the most important follow-up.
+A genuinely deployable manipulation detector on this corpus would condition on the tactic — either trained per-tactic, or aggregated over a strong-tactic subset. The "one unified manipulation detector" framing in our methodology setup is not supported by the data.
 
 ### 5.3 Limitations
 
@@ -248,21 +299,22 @@ This framing is closer to the deployment question ("flag this trajectory before 
 
 ### 5.4 Future work
 
-In priority order (preempting the corresponding reviewer-criticism in parentheses):
+Status of items relative to the v0 critique (see `writeups/critique/`):
 
-1. **Multi-seed reruns of every (layer × offset) cell.** Rerun each v2 probe sweep with ≥5 seeds and report mean ± 95% bootstrap CI on PR-AUC, ROC-AUC, and L_best. Foundational for any claim that "L9 dominates" — currently all reported numbers are one-point estimates inside a 0.014–0.079 ROC-AUC noise band. (Preempts: "single-seed claims will not pass review.")
-2. **Rollout-level early-warning eval**, starting with deception (longest in-scope lookahead horizon → most favorable rollout numbers). 100 fresh rollouts per condition, per-rollout verdict from a stronger labeler, flag-rate(hack) vs flag-rate(honest). (Preempts: "your PR-AUC numbers don't answer the deployment question.")
-3. **Aggregate / completion-level probe** for manipulation. Mean-pool over the first N tokens, predict completion-level outcome. Should restore manipulation as a flagship result alongside sandbag and deception. (Preempts: "you named the experiment that would close your methodological loop and didn't run it.") The code is in `<exp>/probes.py::run_completion_level_sweep`, Makefile target `completion-<exp>-{v1,v2}`.
-4. **Per-category / per-tactic / per-mode probe breakdowns.** Cheap to add — `<exp>/probes.py::sweep_per_stratum` already implements it; Makefile target `per-stratum-<exp>-v2`. Tells us whether the L9 signal is uniform across categories or one-category-dominant. (Preempts: "is the L9 signal a generic deception detector or a `misattributed_quote` detector?")
-5. **Cross-model generalization** on `Llama-3.2-1B-Instruct` (the non-abliterated counterpart) and ideally on a 7B+ chat model. The mid-stack-band claim is much stronger if it survives a model change. Minimum bar: take the abliterated-trained L9 v2 deception probe, evaluate on stock-Llama completions where the hack persona actually lied. (Preempts: "is this just a property of the abliterated model?")
-6. **Held-out prompt category** as a stricter generalization test.
-7. **MLP-vs-linear sanity check** on a few cells per behavior — one paragraph, confirms linear is the right probe class. Code: `<exp>/probes.py::run_mlp_sanity_check`, Makefile target `mlp-sanity-<exp>-v2`.
-8. **Probe-direction similarity** across the three behaviors at the L9-band best layer (cosine similarity of trained probe weight vectors). Tests whether sandbag/manipulation/deception share one "I'm misaligning" direction or have three independent ones. Code: `tools/probe_similarity.py`.
-9. **Two more behaviors from the original queue:** deceptive alignment, self-preservation / corrigibility. Tests whether the proposed "fleeting commitment vs sustained register" taxonomy holds beyond the three points it was generated from.
+1. **Multi-seed reruns of every (layer × offset) cell** — **NOT YET DONE.** Rerun each v2 probe sweep with ≥5 seeds and report mean ± 95% bootstrap CI on PR-AUC, ROC-AUC, and L_best. Foundational for any claim that "L9 dominates" — currently all reported numbers are one-point estimates inside a 0.014–0.079 ROC-AUC noise band. **Highest-priority remaining follow-up.** (Preempts: "single-seed claims will not pass review.")
+2. **Rollout-level early-warning eval** — **NOT YET DONE.** Starting with deception (longest in-scope lookahead horizon → most favorable rollout numbers). 100 fresh rollouts per condition, per-rollout verdict from a stronger labeler, flag-rate(hack) vs flag-rate(honest). (Preempts: "your PR-AUC numbers don't answer the deployment question.") The single experiment most likely to qualitatively change the paper.
+3. **Aggregate / completion-level probe for manipulation** — **DONE.** Result: degenerate on this corpus (within-hack saturated at 100% positive); the v2 manipulation negative result stands. Reported in §3.4 and §5.2. (`writeups/completion_level.md`).
+4. **Per-stratum probe breakdowns** — **DONE.** Sandbag uniform across modes (lift +0.18 to +0.30); manipulation bimodal across tactics; deception dominated by `invented_statistic` (lift +0.526 at L9). Reported in §3.3, §3.4. (`writeups/per_stratum.md`).
+5. **MLP-vs-linear sanity check** — **DONE.** Linear matches MLP within 0.012 ROC-AUC across six cells; linear is the right tool. Reported in §4.1c. (`writeups/mlp_sanity.md`).
+6. **Probe-direction cosine similarity across behaviors** — **PARTIALLY DONE.** Deception ↔ manipulation cosine at L9, k=0 = +0.020 (random-direction noise floor). Sandbag missing (weights not yet saved). The available cross-pair shows the three behaviors share a *compute locus* but not a *feature*. Reported in §4.1b. (`writeups/probe_similarity.md`).
+7. **Cross-model generalization** on `Llama-3.2-1B-Instruct` (non-abliterated) — **NOT YET DONE.** Minimum bar: take the abliterated-trained L9 v2 deception probe, evaluate on stock-Llama completions where the hack persona actually lied. (Preempts: "is this just a property of the abliterated model?")
+8. **Held-out prompt category** as a stricter generalization test — **NOT YET DONE.** Cheap to run; train on 4 of 5 strata, test on the held-out one.
+9. **Inter-annotator-agreement spot check on the OpenAI labeler.** 50 positive + 50 negative tokens per behavior, human adjudication, report Cohen's κ. Important for a NeurIPS submission. Not yet run.
+10. **Two more behaviors from the original queue:** deceptive alignment, self-preservation / corrigibility. Tests whether the proposed "fleeting commitment vs sustained register" taxonomy holds beyond the three points it was generated from. Out of scope for this paper round.
 
 ## 6. Conclusion
 
-Linear probes on residual-stream activations in a 1B abliterated chat model represent the model's commitment to misaligned behavior in a **mid-stack band (L7–L13)** in a 17-layer model, several tokens before the misaligned token is emitted, for three distinct behaviors. The right labeling target depends on whether the behavior has a *fleeting commitment* (sandbag, deception — transition-only labels recover a clear lookahead signal at mid-stack) or a *sustained register* (manipulation — full-span / aggregate labels are the right framing). A behavior's *lookahead horizon* — how far ahead of emission the probe still fires — is informative about how persistent the commitment representation is in the model: amongst the three transition-labeled core behaviors, deception's commitment persists ~10 tokens while sandbag's fades by k≈5. The combination points toward residual-stream probes as a viable substrate for runtime misalignment detection, with the layer and decay-shape of each behavior's probe informing the right deployment-time framing. The single-seed nature of the headline numbers limits how confidently any of these claims can be made; multi-seed reruns are the highest-priority follow-up.
+Linear probes on residual-stream activations in a 1B abliterated chat model represent the model's commitment to misaligned behavior in a **mid-stack band (L7–L13)** in a 17-layer model, several tokens before the misaligned token is emitted, for three distinct behaviors. **The band is a shared compute *locus*, not a shared feature:** cross-experiment probe-direction cosine similarity is at the random-direction noise floor (≈+0.02 at L9, k=0). The right labeling target depends on whether the behavior has a *fleeting commitment* (sandbag, deception — transition-only labels recover a clear lookahead signal at mid-stack) or a *sustained register* (manipulation — full-span at the corpus level, or per-tactic at finer grain). A behavior's *lookahead horizon* — how far ahead of emission the probe still fires — is informative about how persistent the commitment representation is in the model: amongst the three transition-labeled core behaviors, deception's commitment persists ~10 tokens while sandbag's fades by k≈5. **Per-stratum analysis reveals substantial category-specific dominance** for deception (the L9 signal is partly an `invented_statistic` detector) and manipulation (bimodal across tactics); only sandbag generalizes uniformly across its modes. A non-linearity sanity check confirms linear probing is the right methodology. The combined results point toward residual-stream probes as a viable substrate for runtime misalignment detection — with the *layer, decay-shape, and category-mix* of each behavior's probe informing the right deployment-time framing. The single-seed nature of all reported numbers limits how confidently the layer-band claim can be tightened; multi-seed reruns and a rollout-level early-warning eval are the highest-priority remaining follow-ups.
 
 ## Appendix A — Artifacts
 
