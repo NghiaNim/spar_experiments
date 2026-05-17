@@ -226,6 +226,7 @@ def _train_probes_batched(
         "threshold": thresh_list, "train_f1_at_best_thresh": train_f1_list,
         "n_train": int(N_tr), "n_test": int(len(y_te_np)),
         "pos_rate_test": pos_rate_te, "majority_baseline": maj,
+        "W": W.detach().cpu(), "b": b.detach().cpu(),
     }
 
 
