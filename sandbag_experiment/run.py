@@ -96,6 +96,8 @@ def _task_paths(task: str, label_variant: str = "full") -> dict:
         "labels": f"{base}/labels{suffix}.json",
         "samples": f"{base}/samples{suffix}.jsonl",
         "results": f"{base}/results{suffix}",
+        "results_completion": f"{base}/results_completion{suffix}",
+        "results_strata": f"{base}/results_strata{suffix}",
     }
 
 
@@ -225,6 +227,113 @@ def _variant_suffix(label_variant: str) -> str:
     return "" if label_variant == "full" else f"_{label_variant}"
 
 
+@app.function(
+    gpu=GPU_KIND,
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 30,
+)
+def do_completion_probe(
+    task: str = "sandbag",
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    label_variant: str = "full",
+    prefix_lengths: str = "1,3,5,10,20",
+) -> str:
+    """Completion-level (aggregate) probe: mean-pool first N tokens, predict per-completion outcome."""
+    from sandbag_experiment.probes import run_completion_level_sweep
+
+    p = _task_paths(task, label_variant=label_variant)
+    pl = tuple(int(x) for x in prefix_lengths.split(",") if x.strip())
+    rn = run_completion_level_sweep(
+        activations_path=p["activations"],
+        labels_path=p["labels"],
+        out_dir=p["results_completion"],
+        prefix_lengths=pl,
+        num_epochs=num_epochs,
+        neg_per_pos=neg_per_pos,
+        seed=seed,
+        positive_kind="hack",
+        positive_subset_name="sandbag_prompts",
+    )
+    DATA_VOLUME.commit()
+    return rn
+
+
+@app.function(
+    gpu=GPU_KIND,
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 60,
+)
+def do_per_stratum_probe(
+    task: str = "sandbag",
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    label_variant: str = "full",
+    mlp_layer: int = 9,
+    mlp_offsets: str = "0,5",
+    mlp_hidden: int = 256,
+    stratum_field: str = "sandbag_mode",
+) -> None:
+    """Per-stratum sweep: filter hack completions by stratum_field and run token-level probe per stratum."""
+    from sandbag_experiment.probes import sweep_per_stratum
+
+    p = _task_paths(task, label_variant=label_variant)
+    sweep_per_stratum(
+        activations_path=p["activations"],
+        labels_path=p["labels"],
+        corpus_path=p["corpus"],
+        stratum_field=stratum_field,
+        out_dir=p["results_strata"],
+        max_offset=max_offset,
+        num_epochs=num_epochs,
+        neg_per_pos=neg_per_pos,
+        seed=seed,
+        positive_kind="hack",
+    )
+    DATA_VOLUME.commit()
+
+
+@app.function(
+    gpu=GPU_KIND,
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 30,
+)
+def do_mlp_sanity(
+    task: str = "sandbag",
+    layer: int = 9,
+    offsets: str = "0,5",
+    hidden: int = 256,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    label_variant: str = "full",
+    prompt_filter: str = "hack",
+) -> None:
+    """MLP-vs-linear sanity check on a single (layer, offset) cell."""
+    from sandbag_experiment.probes import run_mlp_sanity_check
+
+    p = _task_paths(task, label_variant=label_variant)
+    off_tuple = tuple(int(x) for x in offsets.split(",") if x.strip())
+    suffix = _variant_suffix(label_variant)
+    out_path = f"{p['base']}/results_mlp_sanity{suffix}.json"
+    run_mlp_sanity_check(
+        activations_path=p["activations"],
+        labels_path=p["labels"],
+        out_path=out_path,
+        layer=layer,
+        offsets=off_tuple,
+        hidden=hidden,
+        num_epochs=num_epochs,
+        neg_per_pos=neg_per_pos,
+        seed=seed,
+        prompt_filter=prompt_filter if prompt_filter else None,
+    )
+    DATA_VOLUME.commit()
+
+
 def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> None:
     """Pull the per-task results subtree to ./{dest_root}/sandbag/{task}/."""
     import os
@@ -233,17 +342,21 @@ def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> Non
     suffix = _variant_suffix(label_variant)
     dest = f"{dest_root}/sandbag/{task}"
     os.makedirs(dest, exist_ok=True)
-    remote = f"{task}/results{suffix}"
-    rc = subprocess.run(
-        [
-            "modal", "volume", "get", "--force", "sandbag-data",
-            remote, dest,
-        ]
-    ).returncode
-    if rc != 0:
-        print(f"  skipped {remote} (not on volume yet)")
-    else:
-        print(f"  pulled {remote} -> ./{dest}/results{suffix}")
+    for remote_root in (
+        f"{task}/results{suffix}",
+        f"{task}/results_completion{suffix}",
+        f"{task}/results_strata{suffix}",
+    ):
+        rc = subprocess.run(
+            [
+                "modal", "volume", "get", "--force", "sandbag-data",
+                remote_root, dest,
+            ]
+        ).returncode
+        if rc != 0:
+            print(f"  skipped {remote_root} (not on volume yet)")
+        else:
+            print(f"  pulled {remote_root} -> ./{dest}/{remote_root.split('/')[-1]}")
 
 
 def _pull_data(task: str, dest_root: str = "data", label_variant: str = "full") -> None:
@@ -294,6 +407,12 @@ def main(
     per_model_attempts: int = 2,
     max_total_wait: float = 180.0,
     label_variant: str = "full",
+    prefix_lengths: str = "1,3,5,10,20",
+    mlp_layer: int = 9,
+    mlp_offsets: str = "0,5",
+    mlp_hidden: int = 256,
+    stratum_field: str = "sandbag_mode",
+    seed: int = 0,
     download: bool = True,
     download_dir: str = "results",
 ) -> None:
@@ -310,7 +429,10 @@ def main(
     if task not in valid_tasks:
         raise SystemExit(f"unknown task: {task!r} (must be one of {valid_tasks})")
 
-    valid_stages = ("all", "model", "label", "samples", "probe", "download")
+    valid_stages = (
+        "all", "model", "label", "samples", "probe",
+        "completion-probe", "per-stratum-probe", "mlp-sanity", "download",
+    )
     if stage not in valid_stages:
         raise SystemExit(f"unknown stage: {stage!r} (must be one of {valid_stages})")
 
@@ -369,10 +491,60 @@ def main(
             label_variant=label_variant,
         )
 
-    if stage == "download" or (download and stage in ("all", "probe", "label", "samples")):
+    if stage == "completion-probe":
+        print(
+            f"=== [{task}] (variant={label_variant!r}) completion-level probe "
+            f"(prefix_lengths={prefix_lengths}) ==="
+        )
+        do_completion_probe.remote(
+            task=task,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            seed=seed,
+            label_variant=label_variant,
+            prefix_lengths=prefix_lengths,
+        )
+    if stage == "per-stratum-probe":
+        print(
+            f"=== [{task}] (variant={label_variant!r}) per-stratum probe "
+            f"(field={stratum_field!r}) ==="
+        )
+        do_per_stratum_probe.remote(
+            task=task,
+            max_offset=max_offset,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            seed=seed,
+            label_variant=label_variant,
+            stratum_field=stratum_field,
+        )
+
+    if stage == "mlp-sanity":
+        print(
+            f"=== [{task}] (variant={label_variant!r}) MLP-vs-linear sanity check "
+            f"(L{mlp_layer}, offsets={mlp_offsets}) ==="
+        )
+        do_mlp_sanity.remote(
+            task=task,
+            layer=mlp_layer,
+            offsets=mlp_offsets,
+            hidden=mlp_hidden,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            seed=seed,
+            label_variant=label_variant,
+        )
+
+    if stage == "download" or (
+        download and stage in ("all", "probe", "label", "samples",
+                               "completion-probe", "per-stratum-probe",
+                               "mlp-sanity")
+    ):
         print(f"=== [{task}] (variant={label_variant!r}) downloading QC data ===")
         _pull_data(task, "data", label_variant=label_variant)
-        if stage in ("download", "all", "probe"):
+        if stage in ("download", "all", "probe",
+                     "completion-probe", "per-stratum-probe",
+                     "mlp-sanity"):
             print(f"=== [{task}] (variant={label_variant!r}) downloading probe results ===")
             _pull_results(task, download_dir, label_variant=label_variant)
 

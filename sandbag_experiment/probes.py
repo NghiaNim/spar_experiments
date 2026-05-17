@@ -177,6 +177,7 @@ def _train_probes_batched(
         "threshold": list(nan_layer), "train_f1_at_best_thresh": list(nan_layer),
         "n_train": int(N_tr), "n_test": int(len(y_te)),
         "pos_rate_test": pos_rate_te, "majority_baseline": maj,
+        "W": None, "b": None,
     }
     if N_tr == 0 or y_tr.sum().item() == 0 or y_tr.sum().item() == N_tr or len(y_te) == 0:
         return bad_return
@@ -300,6 +301,10 @@ def sweep_layers_and_offsets(
     pos_rate_by_offset = np.full(len(offsets), np.nan)
     rows: list[dict] = []
 
+    H = acts[0].shape[2] if acts else 0
+    W_grid = torch.full((n_layer_stack, len(offsets), H), float("nan"))
+    b_grid = torch.full((n_layer_stack, len(offsets)), float("nan"))
+
     for oi, k in enumerate(offsets):
         X_tr, y_tr, X_te, y_te = _build_offset_tensors(
             acts, labels, k, train_mask, test_mask, sentence_keep=sentence_keep
@@ -327,6 +332,9 @@ def sweep_layers_and_offsets(
             })
         maj_by_offset[oi] = res["majority_baseline"]
         pos_rate_by_offset[oi] = res["pos_rate_test"]
+        if res["W"] is not None:
+            W_grid[:, oi, :] = res["W"]
+            b_grid[:, oi] = res["b"]
 
         best_layer_f1 = int(np.nanargmax(f1_grid[:, oi])) if not np.all(np.isnan(f1_grid[:, oi])) else -1
         best_layer_pr = int(np.nanargmax(prauc_grid[:, oi])) if not np.all(np.isnan(prauc_grid[:, oi])) else -1
@@ -340,6 +348,8 @@ def sweep_layers_and_offsets(
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    torch.save({"W": W_grid, "b": b_grid, "layers": layers, "offsets": offsets},
+               out / "probe_weights.pt")
     with open(out / "results.json", "w") as f:
         json.dump(
             {
@@ -475,6 +485,372 @@ def _plot_heatmap(grid: np.ndarray, layers, offsets, path: Path, title: str) -> 
     print(f"saved plot -> {path}")
 
 
+# Completion-level (aggregate) probe.
+#
+# Different from the per-token sweep above: features are the mean of
+# activations across the first ``n_prefix`` generated tokens of each
+# completion, and the label is per-completion ("does this completion
+# contain ANY positive token?"). One row per completion instead of
+# one row per token. The deployment question this matches: "given the
+# prefix of a trajectory, will it manifest the behavior?"
+# ---------------------------------------------------------------------
+
+
+def _build_completion_level_features(
+    acts: list[torch.Tensor],
+    labels: list[list[int]],
+    n_prefix: int,
+    sentence_keep: np.ndarray,
+) -> tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+    feats, lbls, kept = [], [], []
+    for sid, (a, lab) in enumerate(zip(acts, labels)):
+        if not sentence_keep[sid]:
+            continue
+        T = a.shape[1]
+        n = min(n_prefix, T)
+        if n <= 0:
+            continue
+        prefix = a[:, :n, :].to(torch.float32)
+        feats.append(prefix.mean(dim=1))
+        lbls.append(1 if any(x == 1 for x in lab) else 0)
+        kept.append(sid)
+    if not feats:
+        L = acts[0].shape[0] if acts else 0
+        H = acts[0].shape[2] if acts else 0
+        return torch.zeros(0, L, H), torch.zeros(0), np.array([], dtype=int)
+    X = torch.stack(feats, dim=0)
+    y = torch.tensor(lbls, dtype=torch.float32)
+    return X, y, np.array(kept, dtype=int)
+
+
+def sweep_completion_level(
+    activations_path: str,
+    labels_path: str,
+    out_dir: str,
+    prefix_lengths: tuple[int, ...] = (1, 3, 5, 10, 20),
+    test_frac: float = 0.2,
+    seed: int = 0,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    prompt_filter: str | None = None,
+) -> None:
+    data = torch.load(activations_path, weights_only=False)
+    acts: list[torch.Tensor] = data["activations"]
+    prompt_kinds: list[str] = data.get("prompt_kinds", ["hack"] * len(acts))
+    prompt_ids = np.asarray(data.get("prompt_ids", list(range(len(acts)))), dtype=int)
+    n_layer_stack = int(data["n_layer_stack"])
+    with open(labels_path) as f:
+        labels: list[list[int]] = json.load(f)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    sentence_keep = np.ones(len(acts), dtype=bool)
+    n_missing = 0
+    for sid, lab in enumerate(labels):
+        if len(lab) == 0 or any(x == -1 for x in lab):
+            sentence_keep[sid] = False
+            n_missing += 1
+    if n_missing:
+        print(f"  dropping {n_missing} samples with missing labels")
+    if prompt_filter is not None:
+        mask = np.array([k == prompt_filter for k in prompt_kinds], dtype=bool)
+        sentence_keep = sentence_keep & mask
+        if sentence_keep.sum() == 0:
+            raise RuntimeError(f"no sentences match prompt_filter={prompt_filter!r}")
+
+    print(
+        f"completion-level sweep [{prompt_filter or 'all'}]  device={device}  "
+        f"{n_layer_stack} layers  prefix_lengths={list(prefix_lengths)}  "
+        f"n_completions={int(sentence_keep.sum())}/{len(acts)}"
+    )
+
+    rows: list[dict] = []
+    auc_grid = np.full((n_layer_stack, len(prefix_lengths)), np.nan)
+    prauc_grid = np.full((n_layer_stack, len(prefix_lengths)), np.nan)
+    f1_grid = np.full((n_layer_stack, len(prefix_lengths)), np.nan)
+
+    for ni, n_prefix in enumerate(prefix_lengths):
+        X, y, kept = _build_completion_level_features(acts, labels, n_prefix, sentence_keep)
+        if X.numel() == 0 or y.numel() == 0:
+            continue
+        groups = prompt_ids[kept]
+        tr_mask, te_mask = _split_by_group(groups, test_frac, seed)
+        X_tr = X[tr_mask]; y_tr = y[tr_mask]
+        X_te = X[te_mask]; y_te = y[te_mask]
+        X_tr_b, y_tr_b = _rebalance_train(X_tr, y_tr, neg_per_pos, seed=seed + ni)
+        res = _train_probes_batched(
+            X_tr_b, y_tr_b, X_te, y_te,
+            device=device, num_epochs=num_epochs,
+        )
+        for li in range(n_layer_stack):
+            auc_grid[li, ni] = res["auc"][li]
+            prauc_grid[li, ni] = res["pr_auc"][li]
+            f1_grid[li, ni] = res["f1"][li]
+            rows.append({
+                "layer": li, "n_prefix": int(n_prefix),
+                "accuracy": res["accuracy"][li],
+                "f1": res["f1"][li],
+                "auc": res["auc"][li],
+                "pr_auc": res["pr_auc"][li],
+                "threshold": res["threshold"][li],
+                "n_train": res["n_train"],
+                "n_test": res["n_test"],
+                "pos_rate_test": res["pos_rate_test"],
+            })
+        best_pr = int(np.nanargmax(prauc_grid[:, ni])) if not np.all(np.isnan(prauc_grid[:, ni])) else -1
+        best_auc = int(np.nanargmax(auc_grid[:, ni])) if not np.all(np.isnan(auc_grid[:, ni])) else -1
+        print(
+            f"  n_prefix={n_prefix:>3}  pos_te={res['pos_rate_test']:.2%}  "
+            f"best ROC-AUC={np.nanmax(auc_grid[:, ni]):.3f}@L{best_auc}  "
+            f"best PR-AUC={np.nanmax(prauc_grid[:, ni]):.3f}@L{best_pr}"
+        )
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "results.json", "w") as f:
+        json.dump(
+            {
+                "kind": "completion_level",
+                "prompt_filter": prompt_filter,
+                "prefix_lengths": list(prefix_lengths),
+                "layers": list(range(n_layer_stack)),
+                "neg_per_pos": neg_per_pos,
+                "auc": auc_grid.tolist(),
+                "pr_auc": prauc_grid.tolist(),
+                "f1": f1_grid.tolist(),
+                "rows": rows,
+            },
+            f,
+            indent=2,
+        )
+    _plot_aggregate_heatmap(
+        auc_grid, list(range(n_layer_stack)), list(prefix_lengths),
+        out / "heatmap_auc.png", title="ROC-AUC (completion-level)",
+    )
+    _plot_aggregate_heatmap(
+        prauc_grid, list(range(n_layer_stack)), list(prefix_lengths),
+        out / "heatmap_pr_auc.png", title="PR-AUC (completion-level)",
+    )
+
+
+def run_completion_level_sweep(
+    activations_path: str,
+    labels_path: str,
+    out_dir: str,
+    run_name: str | None = None,
+    prefix_lengths: tuple[int, ...] = (1, 3, 5, 10, 20),
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    positive_kind: str = "hack",
+    positive_subset_name: str = "sandbag_prompts",
+) -> str:
+    if run_name is None:
+        pl = "_".join(str(n) for n in prefix_lengths)
+        np_tag = ("nobal" if neg_per_pos <= 0 else f"np{float(neg_per_pos):g}")
+        run_name = f"{np_tag}_pl{pl}_ep{num_epochs}"
+    print(f"completion-level sweep run_name = {run_name!r}")
+
+    base = f"{out_dir}/{run_name}"
+    for name, pf in [("all", None), (positive_subset_name, positive_kind)]:
+        print(f"\n=== completion-level sweep: {run_name}/{name} ===")
+        try:
+            sweep_completion_level(
+                activations_path=activations_path,
+                labels_path=labels_path,
+                out_dir=f"{base}/{name}",
+                prefix_lengths=prefix_lengths,
+                num_epochs=num_epochs,
+                neg_per_pos=neg_per_pos,
+                prompt_filter=pf,
+                seed=seed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"subset {name!r} failed: {exc}")
+
+    Path(base).mkdir(parents=True, exist_ok=True)
+    with open(Path(base) / "config.json", "w") as f:
+        json.dump(
+            {
+                "kind": "completion_level",
+                "run_name": run_name,
+                "prefix_lengths": list(prefix_lengths),
+                "num_epochs": num_epochs,
+                "neg_per_pos": neg_per_pos,
+                "seed": seed,
+            },
+            f,
+            indent=2,
+        )
+    return run_name
+
+
+def _plot_aggregate_heatmap(grid, layers, prefix_lengths, path, title):
+    plt.figure(figsize=(max(6.0, 0.6 * len(prefix_lengths) + 3),
+                        max(4.0, 0.3 * len(layers) + 2)))
+    plt.imshow(
+        grid, aspect="auto", origin="lower",
+        extent=(-0.5, len(prefix_lengths) - 0.5,
+                layers[0] - 0.5, layers[-1] + 0.5),
+        vmin=0.0, vmax=1.0, cmap="viridis",
+    )
+    plt.colorbar(label=title)
+    plt.xticks(range(len(prefix_lengths)), [str(n) for n in prefix_lengths])
+    plt.yticks(layers)
+    plt.xlabel("prefix length N  (mean-pool of first N completion tokens)")
+    plt.ylabel("transformer layer  (0 = embeddings)")
+    plt.title(f"Sandbag probe — {title} (per-completion)")
+    plt.tight_layout()
+    plt.savefig(path, dpi=140)
+    plt.close()
+    print(f"saved plot -> {path}")
+
+
+# ---------------------------------------------------------------------
+# Per-category sweep helper.
+#
+# Filters the corpus by a label-stratum (claim_category for deception,
+# tactic for manipulation, sandbag_mode for sandbag) and runs the
+# existing token-level sweep on each stratum separately. Used to
+# answer "is the L9 signal uniform across categories or category-
+# specific?". Imports the corpus's metadata to enumerate strata.
+# ---------------------------------------------------------------------
+
+
+def sweep_per_stratum(
+    activations_path: str,
+    labels_path: str,
+    corpus_path: str,
+    stratum_field: str,
+    out_dir: str,
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    positive_kind: str = "hack",
+) -> None:
+    with open(corpus_path) as f:
+        corpus = json.load(f)
+    records = corpus["records"]
+    strata = sorted({r.get(stratum_field, "") for r in records if r.get(stratum_field)})
+    print(
+        f"per-stratum sweep: stratum_field={stratum_field!r}  "
+        f"strata={strata}"
+    )
+    if not strata:
+        raise RuntimeError(
+            f"no strata found on stratum_field={stratum_field!r}; "
+            f"corpus records have keys {list(records[0].keys()) if records else []}"
+        )
+
+    data = torch.load(activations_path, weights_only=False)
+    prompt_ids_list = data.get("prompt_ids", list(range(len(data["activations"]))))
+    prompt_ids = np.asarray(prompt_ids_list, dtype=int)
+    prompt_kinds = data.get("prompt_kinds", ["hack"] * len(data["activations"]))
+
+    record_by_prompt_id: dict[int, dict] = {}
+    for r in records:
+        pid = r.get("prompt_id")
+        if pid is not None:
+            record_by_prompt_id[int(pid)] = r
+
+    for stratum in strata:
+        keep_pids = {
+            pid for pid, r in record_by_prompt_id.items()
+            if r.get(stratum_field) == stratum
+        }
+        if not keep_pids:
+            continue
+        keep_mask = np.array(
+            [(pid in keep_pids) and (kind == positive_kind)
+             for pid, kind in zip(prompt_ids, prompt_kinds)],
+            dtype=bool,
+        )
+        if keep_mask.sum() < 10:
+            print(f"  stratum {stratum!r}: only {keep_mask.sum()} hack completions, skipping")
+            continue
+        sub_out = f"{out_dir}/{stratum}"
+        print(f"\n--- stratum {stratum!r}: {keep_mask.sum()} hack completions ---")
+        try:
+            sweep_layers_and_offsets_filtered(
+                activations_path=activations_path,
+                labels_path=labels_path,
+                out_dir=sub_out,
+                max_offset=max_offset,
+                num_epochs=num_epochs,
+                neg_per_pos=neg_per_pos,
+                seed=seed,
+                sentence_mask=keep_mask,
+                stratum_name=stratum,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  stratum {stratum!r} failed: {exc}")
+
+
+def sweep_layers_and_offsets_filtered(
+    activations_path: str,
+    labels_path: str,
+    out_dir: str,
+    max_offset: int,
+    num_epochs: int,
+    neg_per_pos: float,
+    seed: int,
+    sentence_mask: np.ndarray,
+    stratum_name: str,
+) -> None:
+    """Same as sweep_layers_and_offsets but takes a pre-computed sentence_keep mask."""
+    data = torch.load(activations_path, weights_only=False)
+    acts: list[torch.Tensor] = data["activations"]
+    prompt_ids_list = data.get("prompt_ids", list(range(len(acts))))
+    prompt_ids = np.asarray(prompt_ids_list, dtype=int)
+    n_layer_stack = int(data["n_layer_stack"])
+    with open(labels_path) as f:
+        labels: list[list[int]] = json.load(f)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    sentence_keep = sentence_mask.copy()
+    for sid, lab in enumerate(labels):
+        if len(lab) == 0 or any(x == -1 for x in lab):
+            sentence_keep[sid] = False
+    if sentence_keep.sum() == 0:
+        raise RuntimeError("sentence_mask kept nothing after dropping missing-label samples")
+
+    kept_idx = np.where(sentence_keep)[0]
+    tr_kept, te_kept = _split_by_group(prompt_ids[kept_idx], 0.2, seed)
+    train_mask = np.zeros(len(acts), dtype=bool)
+    test_mask = np.zeros(len(acts), dtype=bool)
+    train_mask[kept_idx[tr_kept]] = True
+    test_mask[kept_idx[te_kept]] = True
+
+    offsets = list(range(max_offset + 1))
+    layers = list(range(n_layer_stack))
+    rows: list[dict] = []
+
+    for k in offsets:
+        X_tr, y_tr, X_te, y_te = _build_offset_tensors(
+            acts, labels, k, train_mask, test_mask, sentence_keep=sentence_keep
+        )
+        X_tr_b, y_tr_b = _rebalance_train(X_tr, y_tr, neg_per_pos, seed=seed + k)
+        res = _train_probes_batched(X_tr_b, y_tr_b, X_te, y_te, device=device, num_epochs=num_epochs)
+        for li in range(n_layer_stack):
+            rows.append({
+                "layer": li, "offset": k, "stratum": stratum_name,
+                "accuracy": res["accuracy"][li], "f1": res["f1"][li],
+                "auc": res["auc"][li], "pr_auc": res["pr_auc"][li],
+                "threshold": res["threshold"][li],
+                "n_train": res["n_train"], "n_test": res["n_test"],
+                "pos_rate_test": res["pos_rate_test"],
+                "majority_baseline": res["majority_baseline"],
+            })
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "results.json", "w") as f:
+        json.dump({"stratum": stratum_name, "layers": layers, "offsets": offsets, "rows": rows},
+                  f, indent=2)
+
+
 def _plot_lines(
     grid: np.ndarray,
     layers,
@@ -502,3 +878,128 @@ def _plot_lines(
     plt.savefig(path, dpi=140)
     plt.close()
     print(f"saved plot -> {path}")
+
+
+# ---------------------------------------------------------------------
+# MLP sanity check.
+#
+# Runs a small 2-layer MLP on the activations of a SINGLE (layer,
+# offset) cell and reports ROC-AUC alongside the existing linear
+# probe's number. Tells us whether the misalignment representation is
+# linearly accessible at that cell, or whether non-linearity buys
+# meaningful additional lift (which would soften the "we found the
+# direction" claim).
+# ---------------------------------------------------------------------
+
+
+def run_mlp_sanity_check(
+    activations_path: str,
+    labels_path: str,
+    out_path: str,
+    layer: int,
+    offsets: tuple[int, ...] = (0, 5),
+    hidden: int = 256,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    prompt_filter: str | None = "hack",
+) -> None:
+    """Train a 2-layer MLP and a linear probe on the same cells; compare AUCs."""
+    data = torch.load(activations_path, weights_only=False)
+    acts: list[torch.Tensor] = data["activations"]
+    prompt_kinds = data.get("prompt_kinds", ["hack"] * len(acts))
+    prompt_ids = np.asarray(data.get("prompt_ids", list(range(len(acts)))), dtype=int)
+    n_layer_stack = int(data["n_layer_stack"])
+    with open(labels_path) as f:
+        labels: list[list[int]] = json.load(f)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    sentence_keep = np.ones(len(acts), dtype=bool)
+    for sid, lab in enumerate(labels):
+        if len(lab) == 0 or any(x == -1 for x in lab):
+            sentence_keep[sid] = False
+    if prompt_filter is not None:
+        mask = np.array([k == prompt_filter for k in prompt_kinds], dtype=bool)
+        sentence_keep = sentence_keep & mask
+
+    kept_idx = np.where(sentence_keep)[0]
+    tr_kept, te_kept = _split_by_group(prompt_ids[kept_idx], 0.2, seed)
+    train_mask = np.zeros(len(acts), dtype=bool)
+    test_mask = np.zeros(len(acts), dtype=bool)
+    train_mask[kept_idx[tr_kept]] = True
+    test_mask[kept_idx[te_kept]] = True
+
+    results = []
+    for k in offsets:
+        X_tr, y_tr, X_te, y_te = _build_offset_tensors(
+            acts, labels, k, train_mask, test_mask, sentence_keep=sentence_keep
+        )
+        X_tr_b, y_tr_b = _rebalance_train(X_tr, y_tr, neg_per_pos, seed=seed + k)
+        # Slice to just one layer
+        X_tr_l = X_tr_b[:, layer, :].to(device)
+        X_te_l = X_te[:, layer, :].to(device)
+        y_tr_l = y_tr_b.to(device)
+        y_te_np = y_te.numpy().astype(int)
+
+        # Linear
+        H = X_tr_l.shape[1]
+        W_lin = torch.zeros(H, device=device, requires_grad=True)
+        b_lin = torch.zeros(1, device=device, requires_grad=True)
+        pos_rate = y_tr_l.mean().item()
+        pw = torch.tensor([(1 - pos_rate) / max(pos_rate, 1e-8)], device=device)
+        opt = torch.optim.AdamW([W_lin, b_lin], lr=0.05, weight_decay=1e-3)
+        for _ in range(num_epochs):
+            logits = X_tr_l @ W_lin + b_lin
+            loss = F.binary_cross_entropy_with_logits(logits, y_tr_l, pos_weight=pw)
+            opt.zero_grad(); loss.backward(); opt.step()
+        with torch.no_grad():
+            lin_proba = torch.sigmoid(X_te_l @ W_lin + b_lin).cpu().numpy()
+        try:
+            lin_auc = float(roc_auc_score(y_te_np, lin_proba))
+            lin_prauc = float(average_precision_score(y_te_np, lin_proba))
+        except Exception:
+            lin_auc = float("nan"); lin_prauc = float("nan")
+
+        # MLP (2-layer)
+        mlp = torch.nn.Sequential(
+            torch.nn.Linear(H, hidden),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden, 1),
+        ).to(device)
+        opt = torch.optim.AdamW(mlp.parameters(), lr=1e-3, weight_decay=1e-3)
+        for _ in range(num_epochs):
+            logits = mlp(X_tr_l).squeeze(-1)
+            loss = F.binary_cross_entropy_with_logits(logits, y_tr_l, pos_weight=pw)
+            opt.zero_grad(); loss.backward(); opt.step()
+        with torch.no_grad():
+            mlp_proba = torch.sigmoid(mlp(X_te_l).squeeze(-1)).cpu().numpy()
+        try:
+            mlp_auc = float(roc_auc_score(y_te_np, mlp_proba))
+            mlp_prauc = float(average_precision_score(y_te_np, mlp_proba))
+        except Exception:
+            mlp_auc = float("nan"); mlp_prauc = float("nan")
+
+        results.append({
+            "layer": layer, "offset": k,
+            "n_train": int(X_tr_l.shape[0]), "n_test": int(X_te_l.shape[0]),
+            "linear_auc": lin_auc, "linear_pr_auc": lin_prauc,
+            "mlp_auc": mlp_auc, "mlp_pr_auc": mlp_prauc,
+            "mlp_minus_linear_auc": mlp_auc - lin_auc,
+        })
+        print(
+            f"  L{layer} k={k}: linear ROC={lin_auc:.3f}  MLP ROC={mlp_auc:.3f}  "
+            f"(MLP - linear = {mlp_auc - lin_auc:+.3f})"
+        )
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump({
+            "layer": layer, "offsets": list(offsets),
+            "hidden": hidden, "num_epochs": num_epochs,
+            "prompt_filter": prompt_filter, "neg_per_pos": neg_per_pos,
+            "rows": results,
+        }, f, indent=2)
+    print(f"saved -> {out}")
+
+

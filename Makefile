@@ -254,6 +254,137 @@ all-decep-v2: label-decep-v2 probe-decep-v2
 pull-decep-v2:
 	$(DE) --task deception --stage download --label-variant transition
 
+# ===== Follow-up probes (post-paper v0): completion-level, per-stratum, ===
+# ===== MLP sanity, probe-direction similarity.                          ===
+#
+# All four operate against existing on-volume activations + labels.
+# Completion-level + per-stratum + MLP each have a `--label-variant
+# {full,transition}` flag (defaults to transition since v2 is the
+# headline). Probe similarity is a local script that reads downloaded
+# probe_weights.pt files.
+#
+# Override at the command line, e.g.
+#   make completion-decep-v2 PREFIX_LENGTHS=1,5,10
+#   make mlp-sanity-decep-v2 MLP_LAYER=7 MLP_OFFSETS=0,3,5
+#   make per-stratum-decep-v2 STRATUM_FIELD=claim_category
+
+PREFIX_LENGTHS    ?= 1,3,5,10,20
+MLP_LAYER         ?= 9
+MLP_LAYER_MANIP   ?= 12
+MLP_OFFSETS       ?= 0,5
+MLP_HIDDEN        ?= 256
+SEED              ?= 0
+STRATUM_FIELD_DECEP ?= claim_category
+STRATUM_FIELD_MANIP ?= tactic
+STRATUM_FIELD_SB    ?= sandbag_mode
+
+# ----- completion-level (aggregate) probe -----------------------------
+# Mean-pool activations over the first N tokens of each completion, predict
+# per-completion outcome. Closes the manipulation v2 negative result.
+.PHONY: completion-sandbag-v2 completion-manip-v2 completion-decep-v2
+
+completion-sandbag-v2:
+	$(SB) --task sandbag --stage completion-probe --label-variant transition \
+	      --prefix-lengths $(PREFIX_LENGTHS) --seed $(SEED) \
+	      --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+completion-manip-v2:
+	$(MN) --task manipulation --stage completion-probe --label-variant transition \
+	      --prefix-lengths $(PREFIX_LENGTHS) --seed $(SEED) \
+	      --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+completion-decep-v2:
+	$(DE) --task deception --stage completion-probe --label-variant transition \
+	      --prefix-lengths $(PREFIX_LENGTHS) --seed $(SEED) \
+	      --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+# Same but on v1 (full-span labels) — useful for manipulation since v1 is
+# its headline.
+.PHONY: completion-manip-v1 completion-sandbag-v1 completion-decep-v1
+
+completion-manip-v1:
+	$(MN) --task manipulation --stage completion-probe \
+	      --prefix-lengths $(PREFIX_LENGTHS) --seed $(SEED) \
+	      --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+completion-sandbag-v1:
+	$(SB) --task sandbag --stage completion-probe \
+	      --prefix-lengths $(PREFIX_LENGTHS) --seed $(SEED) \
+	      --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+completion-decep-v1:
+	$(DE) --task deception --stage completion-probe \
+	      --prefix-lengths $(PREFIX_LENGTHS) --seed $(SEED) \
+	      --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+# ----- per-stratum (per-category / per-tactic / per-mode) -------------
+# Filter hack-class completions by the stratum field (claim_category for
+# deception, tactic for manipulation, sandbag_mode for sandbag) and run
+# the token-level sweep on each stratum separately.
+.PHONY: per-stratum-sandbag-v2 per-stratum-manip-v2 per-stratum-decep-v2
+
+per-stratum-sandbag-v2:
+	$(SB) --task sandbag --stage per-stratum-probe --label-variant transition \
+	      --stratum-field $(STRATUM_FIELD_SB) --seed $(SEED) \
+	      --max-offset $(MAX_OFFSET) --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+per-stratum-manip-v2:
+	$(MN) --task manipulation --stage per-stratum-probe --label-variant transition \
+	      --stratum-field $(STRATUM_FIELD_MANIP) --seed $(SEED) \
+	      --max-offset $(MAX_OFFSET) --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+per-stratum-decep-v2:
+	$(DE) --task deception --stage per-stratum-probe --label-variant transition \
+	      --stratum-field $(STRATUM_FIELD_DECEP) --seed $(SEED) \
+	      --max-offset $(MAX_OFFSET) --neg-per-pos $(NEG_PER_POS) --num-epochs $(EPOCHS)
+
+# ----- MLP-vs-linear sanity check -------------------------------------
+# Trains a 2-layer MLP and a linear probe on the same (layer, offset)
+# cell. Tells us whether linear is the right tool or if non-linearity
+# buys lift.
+.PHONY: mlp-sanity-sandbag-v2 mlp-sanity-manip-v2 mlp-sanity-decep-v2
+
+mlp-sanity-sandbag-v2:
+	$(SB) --task sandbag --stage mlp-sanity --label-variant transition \
+	      --mlp-layer $(MLP_LAYER) --mlp-offsets $(MLP_OFFSETS) \
+	      --mlp-hidden $(MLP_HIDDEN) --num-epochs $(EPOCHS) \
+	      --neg-per-pos $(NEG_PER_POS) --seed $(SEED)
+
+mlp-sanity-manip-v2:
+	$(MN) --task manipulation --stage mlp-sanity --label-variant transition \
+	      --mlp-layer $(MLP_LAYER_MANIP) --mlp-offsets $(MLP_OFFSETS) \
+	      --mlp-hidden $(MLP_HIDDEN) --num-epochs $(EPOCHS) \
+	      --neg-per-pos $(NEG_PER_POS) --seed $(SEED)
+
+mlp-sanity-decep-v2:
+	$(DE) --task deception --stage mlp-sanity --label-variant transition \
+	      --mlp-layer $(MLP_LAYER) --mlp-offsets $(MLP_OFFSETS) \
+	      --mlp-hidden $(MLP_HIDDEN) --num-epochs $(EPOCHS) \
+	      --neg-per-pos $(NEG_PER_POS) --seed $(SEED)
+
+# ----- Probe-direction similarity (local) -----------------------------
+# Reads probe_weights.pt files downloaded by pull-*-v2 and computes
+# pairwise cosine similarity. Run after the v2 probe sweeps + their
+# pull steps have completed.
+.PHONY: probe-similarity probe-similarity-sweep
+
+probe-similarity:
+	python3 tools/probe_similarity.py --layer $(MLP_LAYER) --offset 0 \
+	    --label-variant transition --out results/probe_similarity_L$(MLP_LAYER)_k0.json
+
+probe-similarity-sweep:
+	python3 tools/probe_similarity.py --sweep --label-variant transition \
+	    --out results/probe_similarity_sweep.json
+
+# ----- meta: run everything in the follow-up bundle -------------------
+.PHONY: followups-all
+followups-all: completion-sandbag-v2 completion-manip-v2 completion-decep-v2 \
+               completion-manip-v1 \
+               per-stratum-sandbag-v2 per-stratum-manip-v2 per-stratum-decep-v2 \
+               mlp-sanity-sandbag-v2 mlp-sanity-manip-v2 mlp-sanity-decep-v2 \
+               pull-sandbag-v2 pull-manip-v2 pull-decep-v2 \
+               probe-similarity
+
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
 
@@ -471,6 +602,20 @@ help:
 	@echo "  make qc-decep-by-category-v2          v2 break down by claim_category"
 	@echo "  make qc-decep-compare                 v1 vs v2 hack-class positive-rate"
 	@echo
+	@echo "Follow-up probes (post-paper-v0 experiments):"
+	@echo "  completion-level (mean-pool first N tokens, per-completion outcome):"
+	@echo "    make completion-{sandbag,manip,decep}-v2   # uses transition labels"
+	@echo "    make completion-manip-v1                   # v1 labels (manip headline)"
+	@echo "  per-stratum (filter hack by category/tactic/mode):"
+	@echo "    make per-stratum-{sandbag,manip,decep}-v2"
+	@echo "  MLP-vs-linear sanity check (single layer, a few offsets):"
+	@echo "    make mlp-sanity-{sandbag,manip,decep}-v2"
+	@echo "  Probe direction similarity (local; reads downloaded probe_weights.pt):"
+	@echo "    make probe-similarity                       # single L9 k=0 comparison"
+	@echo "    make probe-similarity-sweep                 # full (layer, offset) grid"
+	@echo "  meta target:"
+	@echo "    make followups-all                          # runs everything in this bundle"
+	@echo
 	@echo "Profanity probe (legacy):"
 	@echo "  make prof-{all,model,label,probe,elicit,pull}"
 	@echo
@@ -484,3 +629,8 @@ help:
 	@echo "  EPOCHS             = $(EPOCHS)"
 	@echo "  NEG_PER_POS        = $(NEG_PER_POS)"
 	@echo "  RUN_NAME           = $(RUN_NAME)   (empty => auto-named subdir under results/)"
+	@echo "  PREFIX_LENGTHS     = $(PREFIX_LENGTHS)   (completion-probe)"
+	@echo "  MLP_LAYER          = $(MLP_LAYER)   (mlp-sanity-{sandbag,decep})"
+	@echo "  MLP_LAYER_MANIP    = $(MLP_LAYER_MANIP)   (mlp-sanity-manip)"
+	@echo "  MLP_OFFSETS        = $(MLP_OFFSETS)   (mlp-sanity)"
+	@echo "  SEED               = $(SEED)   (rerun with --seed N for a fresh probe)"
