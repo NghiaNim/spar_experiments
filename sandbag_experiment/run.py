@@ -351,13 +351,26 @@ def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> Non
             [
                 "modal", "volume", "get", "--force", "sandbag-data",
                 remote_root, dest,
-            ]
-        ).returncode
-        if rc != 0:
+            ],
+            capture_output=True,
+        )
+        if rc.returncode != 0:
             print(f"  skipped {remote_root} (not on volume yet)")
         else:
             print(f"  pulled {remote_root} -> ./{dest}/{remote_root.split('/')[-1]}")
-
+    # MLP-sanity writes a single JSON file (not a directory); pull it separately.
+    mlp_remote = f"{task}/results_mlp_sanity{suffix}.json"
+    rc = subprocess.run(
+        [
+            "modal", "volume", "get", "--force", "sandbag-data",
+            mlp_remote, dest,
+        ],
+        capture_output=True,
+    )
+    if rc.returncode != 0:
+        print(f"  skipped {mlp_remote} (not on volume yet)")
+    else:
+        print(f"  pulled {mlp_remote} -> ./{dest}/")
 
 def _pull_data(task: str, dest_root: str = "data", label_variant: str = "full") -> None:
     """Pull the per-task QC artifacts (corpus, plus variant-specific labels / samples)."""
@@ -378,7 +391,8 @@ def _pull_data(task: str, dest_root: str = "data", label_variant: str = "full") 
             [
                 "modal", "volume", "get", "--force", "sandbag-data",
                 f"{task}/{remote_name}", local,
-            ]
+            ],
+            capture_output=True,
         ).returncode
         if rc != 0:
             print(f"  skipped {task}/{remote_name} (not on volume yet)")
@@ -536,15 +550,11 @@ def main(
         )
 
     if stage == "download" or (
-        download and stage in ("all", "probe", "label", "samples",
-                               "completion-probe", "per-stratum-probe",
-                               "mlp-sanity")
+        download and stage in ("all", "probe", "label", "samples")
     ):
         print(f"=== [{task}] (variant={label_variant!r}) downloading QC data ===")
         _pull_data(task, "data", label_variant=label_variant)
-        if stage in ("download", "all", "probe",
-                     "completion-probe", "per-stratum-probe",
-                     "mlp-sanity"):
+        if stage in ("download", "all", "probe"):
             print(f"=== [{task}] (variant={label_variant!r}) downloading probe results ===")
             _pull_results(task, download_dir, label_variant=label_variant)
 

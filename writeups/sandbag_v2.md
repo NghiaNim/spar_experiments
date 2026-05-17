@@ -66,10 +66,16 @@ Per-class summary (compare to v1 in `sandbag_v1.md` §2):
 | hack mean per-token positive fraction | 0.734 | **0.137** | −0.597 |
 | honest with ≥1 positive token | 0 | 0 | unchanged |
 | mean tokens / hack completion | 71.2 | 71.2 (corpus shared) | — |
-| mean *positive tokens* per hack completion | ~52 | **~10** | −42 |
+| mean *positive tokens* per hack completion | ~52 | **7.68** | −44 |
 
-The mean-positive-tokens-per-hack number (~10) is exactly the ceiling
-the labeler was instructed to respect. Honest stays clean.
+The empirical mean is **7.68 positive tokens per hack completion** —
+slightly *under* the labeler's 10-token-per-commitment ceiling because
+not every hack completion contains a full-length commitment (some have
+short ones, some are refusals). Compare to manipulation v2 (23.3) and
+deception v2 (17.5), both of which run over the ceiling because
+multiple commitments / soft onsets appear in a single completion;
+sandbag commitments are the most localized of the three. Honest stays
+clean.
 
 Per-mode breakdown under v2 (mean positive tokens, % with ≥1
 positive):
@@ -86,8 +92,10 @@ Two findings here:
 - **Evasion-onset modes (`claim_ignorance`, `partial_answer`) elicit
   best.** They have a clear lexical handle for the labeler — opening
   phrases like "I'm not sure" or "let me skip this" — and the labeler
-  marks them ~100% of the time. `mean n_pos ≈ 10` matches the
-  10-token ceiling.
+  marks them ~100% of the time. `claim_ignorance` hits the
+  10.75-token mean (over the 10-token ceiling because some
+  completions have two evasion onsets); the other three modes run
+  under.
 - **Wrong-value / wrong-reasoning modes elicit less reliably under
   v2.** `wrong_reasoning` drops from 82% (v1) to 68% (v2). The
   commitment moment in those modes is harder to pin: the wrong number

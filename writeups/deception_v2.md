@@ -19,21 +19,33 @@ got resolved by an explicit worked example in the prompt, and the
 | best PR-AUC lift @ k=0 | +0.147 | **+0.203** | **+0.056** |
 | best PR-AUC lift @ k=1 | +0.135 | **+0.219** | **+0.084** |
 | best ROC-AUC @ k=0 | 0.796 (L7) | 0.751 (L9) | −0.045 |
-| best ROC-AUC @ k=10 | 0.693 (L16) | **0.643 (L10)** | −0.050 |
+| best ROC-AUC @ k=10 (best-anywhere) | 0.693 (L16) | **0.693 (L8)** | **0.000** |
+| ROC-AUC @ k=10 pinned at L9 | 0.693 | 0.643 | −0.050 |
 
-Three findings worth highlighting:
+Three findings worth highlighting (subject to seed-variance caveats — see §7b):
 
-1. **The lift went up at every offset 0–10**, including at k=1 where
-   v2 actually peaks (+0.219 lift, higher than k=0). The v1 headline
-   was hiding a stronger signal under a 0.79 baseline.
-2. **The mid-stack layer story sharpened.** v1 said L7 dominates;
-   v2 refines that to **L9** at k=0–2, then L8–L10 holding throughout.
-   The mid-stack location is now confirmed across two label variants.
-3. **The lookahead horizon is unusually long.** Lift stays at +0.10
-   even at k=10 — distinct from sandbag v2 (+0.02 at k=10) and
-   manipulation v2 (+0.03 at k=10). Once the model decides to lie,
-   that decision is detectable in the residual stream many tokens
-   ahead.
+1. **The lift went up at every offset 0–10 at the v2 headline layer (L9)**, and
+   the *best-anywhere* ROC-AUC at k=10 matches v1 exactly (both 0.693),
+   with the best layer migrating from v1's L16 to v2's L8 under the
+   relabel. So the long-range signal moves *down* the stack but doesn't
+   weaken. The L9-pinned ROC at k=10 of 0.643 understates v2;
+   best-anywhere is the apples-to-apples comparison. (The PR-AUC lift
+   apparent "peak" at k=1 — +0.219 vs +0.203 at k=0 — is 0.016 and
+   plausibly within seed noise; do not headline.)
+2. **The mid-stack layer story sharpened — modestly.** v1 said L7 dominates;
+   v2 reports **L9** as nominally best at k=0–2, with L7–L10 within
+   0.014–0.043 ROC-AUC of each other (i.e., the "L9 wins" claim is a
+   one-point estimate in a noisy neighborhood — multi-seed reruns are
+   recommended before headlining). The mid-stack *band* (L7–L10) is
+   stable across both label variants; the *exact* layer within that
+   band shouldn't be over-read.
+3. **The lookahead horizon is long *amongst the three v2 core
+   behaviors***. Lift stays at +0.10 at k=10 — distinct from sandbag v2
+   (+0.02) and manipulation v2 (+0.03). But note: sycophancy
+   `hack_prompts/` has ROC-AUC 0.824 at k=10 (PR-AUC lift +0.095 over a
+   2.4% base rate), so the longest-lookahead probe in the broader
+   experimental set is sycophancy, not deception. The deception claim
+   should be scoped accordingly.
 
 Headline (within-hack `deception_prompts/` v2):
 

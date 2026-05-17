@@ -377,13 +377,31 @@ probe-similarity-sweep:
 	    --out results/probe_similarity_sweep.json
 
 # ----- meta: run everything in the follow-up bundle -------------------
-.PHONY: followups-all
-followups-all: completion-sandbag-v2 completion-manip-v2 completion-decep-v2 \
+# This target also re-runs probe-{exp}-v2 first to regenerate probe_weights.pt
+# (the new sweep_layers_and_offsets saves probe weights as a side effect; the
+# existing v2 results on the volume predate this and don't have them, which
+# probe-similarity needs locally).
+#
+# Modal time budget (serial): ~3 probe re-runs (~15min each) + 3 completion
+# (~5min each) + 3 per-stratum (~10min each) + 3 mlp-sanity (~3min each) =
+# ~100 minutes on L4. Pulls + local similarity adds ~5 min.
+#
+# If you don't want to re-run the v2 token probes, use `followups-no-probes`
+# instead and skip probe-similarity (or run it after probe-{exp}-v2 manually).
+.PHONY: followups-all followups-no-probes
+followups-all: probe-sandbag-v2 probe-manip-v2 probe-decep-v2 \
+               completion-sandbag-v2 completion-manip-v2 completion-decep-v2 \
                completion-manip-v1 \
                per-stratum-sandbag-v2 per-stratum-manip-v2 per-stratum-decep-v2 \
                mlp-sanity-sandbag-v2 mlp-sanity-manip-v2 mlp-sanity-decep-v2 \
                pull-sandbag-v2 pull-manip-v2 pull-decep-v2 \
                probe-similarity
+
+followups-no-probes: completion-sandbag-v2 completion-manip-v2 completion-decep-v2 \
+               completion-manip-v1 \
+               per-stratum-sandbag-v2 per-stratum-manip-v2 per-stratum-decep-v2 \
+               mlp-sanity-sandbag-v2 mlp-sanity-manip-v2 mlp-sanity-decep-v2 \
+               pull-sandbag-v2 pull-manip-v2 pull-decep-v2
 
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
