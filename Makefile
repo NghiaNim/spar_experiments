@@ -403,6 +403,27 @@ followups-no-probes: completion-sandbag-v2 completion-manip-v2 completion-decep-
                mlp-sanity-sandbag-v2 mlp-sanity-manip-v2 mlp-sanity-decep-v2 \
                pull-sandbag-v2 pull-manip-v2 pull-decep-v2
 
+# Compute-only bundle: skip every download + the local similarity step.
+# Use this when network is unreliable; pair with `make pull-followups`
+# afterwards (when network is stable) to bring results down + run similarity.
+.PHONY: followups-compute pull-followups
+followups-compute: probe-sandbag-v2 probe-manip-v2 probe-decep-v2 \
+               completion-sandbag-v2 completion-manip-v2 completion-decep-v2 \
+               completion-manip-v1 \
+               per-stratum-sandbag-v2 per-stratum-manip-v2 per-stratum-decep-v2 \
+               mlp-sanity-sandbag-v2 mlp-sanity-manip-v2 mlp-sanity-decep-v2
+
+# Pull-only bundle: pull all three experiments' v2 artifacts and then run the
+# local probe-similarity script. Run this after `make followups-compute` when
+# network has recovered, or any time you want to refresh local copies.
+# Each pull is non-fatal so a transient failure on one experiment doesn't
+# stop the others.
+pull-followups:
+	-$(MAKE) pull-sandbag-v2
+	-$(MAKE) pull-manip-v2
+	-$(MAKE) pull-decep-v2
+	-$(MAKE) probe-similarity
+
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
 
@@ -631,8 +652,11 @@ help:
 	@echo "  Probe direction similarity (local; reads downloaded probe_weights.pt):"
 	@echo "    make probe-similarity                       # single L9 k=0 comparison"
 	@echo "    make probe-similarity-sweep                 # full (layer, offset) grid"
-	@echo "  meta target:"
-	@echo "    make followups-all                          # runs everything in this bundle"
+	@echo "  meta targets:"
+	@echo "    make followups-all                          # runs everything (compute + pulls + similarity)"
+	@echo "    make followups-compute                      # compute-only (Modal jobs, no pulls)"
+	@echo "    make followups-no-probes                    # like followups-all minus the v2 probe re-run"
+	@echo "    make pull-followups                         # pull all 3 v2 trees + run probe-similarity"
 	@echo
 	@echo "Profanity probe (legacy):"
 	@echo "  make prof-{all,model,label,probe,elicit,pull}"

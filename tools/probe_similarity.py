@@ -33,8 +33,14 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-import torch
+try:
+    import torch
+except ImportError:
+    sys.stderr.write(
+        "probe_similarity.py needs `torch` locally to read probe_weights.pt.\n"
+        "Install with: pip install torch  (CPU wheel ~250MB; CUDA optional)\n"
+    )
+    sys.exit(2)
 
 
 SUBSET_BY_EXP = {
