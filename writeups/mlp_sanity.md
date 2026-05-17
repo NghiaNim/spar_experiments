@@ -35,9 +35,21 @@ the linear probe by a margin worth attending to.
 
 For each of the three v2 (transition-labeled) probes, we ran a single
 MLP-vs-linear comparison at two offsets (k=0 and k=5) at the
-behavior's headline layer (sandbag L9, manipulation L12, deception
-L9). Train/test split, rebalancing, and probe hyperparameters match
-the existing v2 token-level sweep:
+behavior's **best-ROC-AUC layer** (sandbag L9, manipulation L12,
+deception L9). Train/test split, rebalancing, and probe
+hyperparameters match the existing v2 token-level sweep:
+
+A small consistency note: for sandbag, the best-ROC-AUC layer (L9)
+differs from the best-PR-AUC layer at k=0 (L7, PR-AUC 0.379 vs L9
+PR-AUC 0.315). The MLP comparison was run at L9 for cross-behavior
+uniformity (L9 is also the best-ROC cell for deception). The
+trade-off is that the MLP check does not directly cover sandbag's
+PR-AUC headline cell at L7, and the L9 vs L7 directions for sandbag
+are not the same direction (cos ≤ 0.46 across layers; see
+`probe_similarity.md` §3b). We expect the same "MLP ≈ linear" result
+at L7 — the linear-suffices conclusion is unlikely to flip between
+adjacent layers — but a confirmatory run is queued
+(`make mlp-sanity-sandbag-v2 MLP_LAYER=7`).
 
 - Group-aware split (20% test) on `prompt_id`
 - `neg_per_pos=10` train rebalance

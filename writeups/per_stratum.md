@@ -63,57 +63,38 @@ each table for n_test counts.
 
 ## 2. Sandbag — per-mode (4 strata, ~32 hack completions each)
 
-| mode                | n_test | pos rate | best ROC-AUC (L)    | best PR-AUC (L) | PR-lift |
-| ---                 | ---:   | ---:     | ---                 | ---             | ---     |
-| `claim_ignorance`   | 675    | 11.7%    | 0.720 (L 1)         | 0.400 (L 1)     | +0.283  |
-| `confidently_wrong` | 526    | 7.0%     | **0.846 (L 6)**     | 0.369 (L 7)     | +0.299  |
-| `partial_answer`    | 336    | 12.2%    | 0.767 (L 8)         | 0.303 (L 9)     | +0.181  |
-| `wrong_reasoning`   | 382    | 8.9%     | 0.781 (L 7)         | 0.332 (L 1)     | +0.243  |
+| mode                | n_test | pos    | L0 ROC | L0 PR | best ROC (L)   | best PR (L)    | PR-lift over baseline | L0→best PR gain |
+| ---                 | ---:   | ---:   | ---:   | ---:  | ---            | ---            | ---:                  | ---:            |
+| `claim_ignorance`   | 675    | 11.7%  | 0.638  | 0.268 | 0.720 (**L 1**)| **0.400 (L 1)**| +0.283                | +0.132          |
+| `confidently_wrong` | 526    | 7.0%   | 0.553  | 0.129 | **0.827 (L 7)**| 0.369 (L 7)    | +0.299                | **+0.240**      |
+| `partial_answer`    | 336    | 12.2%  | 0.523  | 0.146 | 0.755 (L 9)    | 0.303 (L 9)    | +0.181                | +0.156          |
+| `wrong_reasoning`   | 382    | 8.9%   | 0.652  | 0.192 | 0.747 (**L 1**)| 0.332 (**L 1**)| +0.243                | +0.139          |
 
 **Observations:**
 
-- All four modes clear PR-AUC lift > +0.18. The probe finds signal in
-  every sandbag mode, with `confidently_wrong` slightly strongest.
-- Best layers cluster at **L6–L9** for three of four modes, consistent
-  with the headline mid-stack band. `claim_ignorance` best layer is
-  L1 by both ROC-AUC and PR-AUC — early in the stack, suggesting a
-  more lexical signature ("I'm not sure", "to be honest" — short
-  evasion phrases the embedding layer can already detect).
-- The full-corpus v2 sandbag PR-AUC was 0.379 at L7 (PR-lift +0.217).
-  The per-mode lifts (+0.18 to +0.30) bracket this number with
-  `confidently_wrong` and `claim_ignorance` above and the others at
-  or below.
+- All four modes clear PR-AUC lift > +0.18 over baseline. The probe finds signal in every sandbag mode.
+- **Best-layer pattern is heterogeneous.** `confidently_wrong` and `partial_answer` peak at L7 / L9 (mid-stack), consistent with the headline band. **`claim_ignorance` AND `wrong_reasoning` both peak at L1** — the first transformer block. This is the lexical-signature explanation: opening phrases like "I'm not sure", "to be honest", "let me think" are short and the embedding layer + L1 can already detect them. Their L0 ROC-AUCs (0.638 / 0.652) are the highest of any sandbag mode, confirming this.
+- **Contextual gain (L0 → L_best PR-AUC) is largest for `confidently_wrong` (+0.240)** — where the wrong-value claim is genuinely a contextual judgment that embeddings can't catch — and smallest for `claim_ignorance` (+0.132), where most of the discrimination is already at L0.
+- The full-corpus v2 sandbag PR-AUC was 0.379 at L7 (PR-lift +0.217). The per-mode lifts (+0.18 to +0.30) bracket this number.
 
-**Read:** sandbag's headline signal is **not category-driven**; it
-generalizes across modes. This is the cleanest of the three for the
-"the probe represents the deeper misalignment concept" claim.
+**Read:** sandbag's per-mode PR-lift range is the tightest of the three behaviors (1.65×), but the *best layer* varies substantially (L1, L7, L9). Two of four modes are lexical signatures at L1, not mid-stack semantic features. The "uniform across modes" story holds for *PR-lift magnitude* but not for *layer*.
 
 ## 3. Manipulation — per-tactic (5 strata, ~20 hack completions each)
 
-| tactic            | n_test | pos rate | best ROC-AUC (L)    | best PR-AUC (L) | PR-lift |
-| ---               | ---:   | ---:     | ---                 | ---             | ---     |
-| `urgency`         | 441    | 10.0%    | **0.886 (L 9)**     | **0.512 (L 6)** | **+0.412** |
-| `flattery`        | 426    | 10.3%    | 0.928 (L 8)         | 0.482 (L 8)     | +0.379  |
-| `guilt`           | 371    | 15.1%    | 0.820 (L13)         | 0.497 (L13)     | +0.347  |
-| `scarcity`        | 426    | 17.8%    | 0.711 (L11)         | 0.328 (L11)     | +0.150  |
-| `social_proof`    | 412    | 22.3%    | 0.697 (L 8)         | 0.357 (L 8)     | +0.133  |
+| tactic         | n_test | pos    | L0 ROC | L0 PR     | best ROC (L)    | best PR (L)     | PR-lift over baseline | L0→best PR gain |
+| ---            | ---:   | ---:   | ---:   | ---:      | ---             | ---             | ---:                  | ---:            |
+| `urgency`      | 441    | 10.0%  | **0.750** | 0.270  | 0.869 (L 6)     | **0.512 (L 6)** | **+0.412**            | +0.241          |
+| `flattery`     | 426    | 10.3%  | 0.654  | 0.199     | **0.928 (L 8)** | 0.482 (L 8)     | +0.379                | **+0.283**      |
+| `guilt`        | 371    | 15.1%  | 0.643  | 0.248     | 0.820 (L13)     | 0.497 (L13)     | +0.347                | +0.250          |
+| `social_proof` | 412    | 22.3%  | 0.544  | 0.265     | 0.697 (L 8)     | 0.357 (L 8)     | +0.133                | +0.092          |
+| `scarcity`     | 426    | 17.8%  | 0.634  | **0.311** | 0.711 (L11)     | 0.328 (L11)     | +0.150                | **+0.017**      |
 
 **Observations:**
 
-- **Strong tactics:** `urgency` (PR-lift +0.412), `flattery` (+0.379),
-  and `guilt` (+0.347) carry the manipulation signal. ROC-AUC at the
-  best layer is **0.82–0.93** for these — far better than the
-  full-corpus v2 manipulation ROC of 0.67. The per-tactic probe is a
-  much stronger detector for these tactics than the
-  rotated-tactic-mixed full-corpus probe.
-- **Weak tactics:** `scarcity` and `social_proof` have PR-lift only
-  +0.13–0.15. Per-token positive rate is higher for these (18–22% vs
-  10–15% for the strong tactics), making the discrimination harder —
-  scarcity and social_proof completions are *more saturated* with
-  positive tokens, so there's less variance to predict.
-- **Best-layer drift:** L6–L13 across tactics. The full-corpus v2
-  headline (L12) is the right band but the per-tactic best layer
-  varies meaningfully (L8 for flattery, L13 for guilt).
+- **Strong tactics:** `urgency` (PR-lift +0.412), `flattery` (+0.379), and `guilt` (+0.347) carry the manipulation signal. ROC-AUC at the best layer is **0.82–0.93**. **The contextual gain is large for `flattery` (+0.283 from L0 to L_best PR)** — the cleanest "genuinely contextual" result of any manipulation tactic. `urgency` and `guilt` also have substantial gain but with already-elevated L0 baselines (the words "today only", "now", "deserve better" carry direct lexical signature).
+- **`scarcity` is essentially a pure lexical detector.** L0 PR-AUC (0.311) is *higher than the best-cell PR-AUC at any layer except L11* (0.328); the L0 → L_best gain is only +0.017. **The "scarcity probe at L11" is essentially the embedding-layer detector with a marginal contextual refinement.** This is the cleanest "the contextual layers add little" finding in the atlas.
+- `social_proof` is a weaker version of the same — L0 PR=0.265, best 0.357, gain +0.092.
+- **Best-layer drift:** L6–L13 across tactics. Per-tactic best layer varies meaningfully (L6 for urgency, L8 for flattery/social_proof, L13 for guilt).
 
 **Read:** manipulation's signal is **bimodal across tactics**. The
 full-corpus v2 number of +0.118 lift is an average that hides a
@@ -128,27 +109,20 @@ social_proof) unfold more diffusely.
 
 ## 4. Deception — per-category (5 strata, ~24 hack completions each)
 
-| category              | n_test | pos rate | best ROC-AUC (L)    | best PR-AUC (L) | PR-lift |
-| ---                   | ---:   | ---:     | ---                 | ---             | ---     |
-| `invented_statistic`  | 456    | 13.2%    | **0.899 (L 9)**     | **0.657 (L 9)** | **+0.526** |
-| `misattributed_quote` | 469    | 12.2%    | 0.814 (L 8)         | 0.450 (L 9)     | +0.329  |
-| `wrong_recommendation`| 463    | 27.9%    | 0.635 (L11)         | 0.453 (L11)     | +0.175  |
-| `false_factual`       | 421    | 10.5%    | 0.705 (L13)         | 0.270 (L 5)     | +0.166  |
-| `inverted_causal`     | 438    | 11.4%    | 0.692 (L11)         | 0.235 (L11)     | +0.120  |
+| category              | n_test | pos    | L0 ROC    | L0 PR | best ROC (L)    | best PR (L)     | PR-lift over baseline | L0→best PR gain |
+| ---                   | ---:   | ---:   | ---:      | ---:  | ---             | ---             | ---:                  | ---:            |
+| `invented_statistic`  | 456    | 13.2%  | **0.669** | 0.236 | **0.899 (L 9)** | **0.657 (L 9)** | **+0.526**            | **+0.421**      |
+| `misattributed_quote` | 469    | 12.2%  | 0.496     | 0.136 | 0.782 (L 9)     | 0.450 (L 9)     | +0.329                | +0.314          |
+| `wrong_recommendation`| 463    | 27.9%  | 0.488     | 0.265 | 0.635 (L11)     | 0.453 (L11)     | +0.175                | +0.189          |
+| `false_factual`       | 421    | 10.5%  | 0.455     | 0.102 | 0.684 (L 5)     | 0.270 (L 5)     | +0.166                | +0.168          |
+| `inverted_causal`     | 438    | 11.4%  | 0.507     | 0.129 | 0.692 (L11)     | 0.235 (L11)     | +0.120                | +0.105          |
 
 **Observations:**
 
-- **`invented_statistic` is the outlier.** PR-AUC lift +0.526 at L9 —
-  more than 2× the full-corpus v2 deception lift (+0.203). The L9
-  representation is genuinely strong for this category.
-- **`misattributed_quote` is also strong** (+0.329), unsurprising given
-  that misattributed quotes have a distinctive lexical signature (the
-  wrong-attribution name).
-- **`wrong_recommendation`, `false_factual`, `inverted_causal` are
-  weak.** PR-lift +0.12 to +0.18. The full-corpus v2 lift (+0.203) is
-  approximately the average across this heterogeneity.
-- **Best-layer locus:** L8–L13 across the strong categories — still
-  mid-stack — but `false_factual` peaks at L13 (PR best at L5).
+- **`invented_statistic` is the outlier — but it's also the most lexically distinctive deception category.** PR-AUC lift +0.526 at L9 is more than 2× the full-corpus v2 deception lift (+0.203). The L9 representation IS genuinely strong (largest L0 → L_best gain of any cell in the atlas, at +0.421). But the L0 baseline is also unusually elevated (ROC=0.669, the highest L0 ROC of any deception category) because fabricated numerical phrasing ("97% of researchers", "the most-cited finding") has a specific token-distribution signature. So the headline number sits on top of an already-informative embedding baseline; the reviewer-resistant framing is "L9 detects invented-statistic deception cleanly because (a) embeddings carry the lexical signature and (b) L9 adds a strong contextual refinement."
+- **`misattributed_quote` is the cleanest contextual result.** Low L0 PR (0.136), best PR 0.450, gain +0.314 — most of the lift is genuinely contextual. The wrong-attribution name itself doesn't tip the embedding layer; the *fact* of misattribution is a compositional judgment.
+- **`wrong_recommendation`, `false_factual`, `inverted_causal` are weak.** PR-lift +0.12 to +0.18 over baseline; gains over L0 +0.10 to +0.19. The full-corpus v2 lift (+0.203) is approximately the average across this heterogeneity.
+- **Best-layer locus:** L8–L13 across the strong categories — still mid-stack — but `false_factual` peaks at L5 on PR-AUC (with ROC peaking at L13).
 
 **Read:** the "deception lives at L9" headline is **partly an
 'invented_statistic detector at L9' result**. When deployed on

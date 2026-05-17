@@ -14,8 +14,24 @@ by a single-completion classifier — the framing manipulation v2's
 negative result suggested might work for "sustained register"
 behaviors.
 
-**Headline:** the completion-level framing does *not* solve the
-manipulation problem, but in a different way than expected:
+**Headline:** the completion-level question turns out to be
+**unanswerable on this corpus, not "completion-level probes don't
+work in general"** — an important distinction. The within-hack
+positive-class saturation is too high (95.8% sandbag/decep, **100%
+manipulation**) for the within-hack classifier to have any negative
+examples to fit against; the cross-class probe is dominated by
+system-prompt persona detection rather than misalignment commitment
+(L0 ROC ≈ 1.0 at N=1 in `all/`). **A corpus with substantial in-hack
+refusal rates** (~30–50% of hack-prompted completions *not* committing
+the behavior — e.g., via a more capable-but-less-compliant model, or
+adversarial questions where the hack persona frequently refuses)
+**is required to make the completion-level question well-posed.** We
+recommend that as a corpus-design follow-up rather than a probe-design
+follow-up.
+
+Specifically the completion-level framing does *not* solve the
+manipulation problem on this corpus, but in a different way than
+expected:
 
 - **`all/` subset (hack + honest)** trivially separates at every
   prefix length tested (N ∈ {1, 3, 5, 10, 20}) with ROC-AUC ≈ **1.000**
@@ -97,13 +113,15 @@ ROC-AUC of the best layer per prefix length:
 | 10              | 0.998 (L15)            | 1.000 (L 5)            | 1.000 (L 8)            |
 | 20              | 1.000 (L11)            | 1.000 (L 7)            | 1.000 (L 8)            |
 
-**This is the persona-detection ceiling.** Every cell is at ROC-AUC
-≈ 1.0 because the all/ task is "given the first N generated tokens,
-predict whether this was a hack-system-prompt or honest-system-prompt
-generation." Since honest completions are zero-labeled by the
-short-circuit and the system prompts produce different opening
-register, the discrimination is trivial — already at N=1 (a single
-token of activation).
+**This is the persona-detection ceiling at the best-layer per N.**
+The all/ task is "given the first N generated tokens, predict whether
+this was a hack-system-prompt or honest-system-prompt generation."
+Since honest completions are zero-labeled by the short-circuit and
+the system prompts produce different opening register, the
+discrimination is trivial at *some* layer — already at N=1 (a single
+token of activation). (Not all layers are at 1.0: e.g., the L0
+baseline at N=10 for manipulation is 0.81, which is high but not at
+ceiling. The "best layer" is what we tabulate.)
 
 PR-AUC and the corresponding lifts:
 

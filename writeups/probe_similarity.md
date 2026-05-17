@@ -15,17 +15,43 @@ direction in the residual stream, or do they have three independent
 representations that all happen to live in the same mid-stack layer
 band?
 
-**Headline:** the probe directions are **near-orthogonal across
-behaviors**. At the headline cell (L9, k=0), the deception
-probe ↔ manipulation probe cosine similarity is **+0.020** — i.e.,
-no shared direction. Across the full (layer × offset) grid, no cell
-exceeds cosine similarity 0.10.
+**Headline (with caveats):** at the headline cell (L9, k=0), the
+deception probe ↔ manipulation probe cosine similarity is **+0.020**
+— at the random-direction noise floor for H ≈ 2048 (E[cos] = 0 ±
+0.022). Across the full (layer × offset) grid, the **maximum cell
+is +0.095 at L12, k=9** — 4.3× the noise SD, small in absolute terms
+but statistically distinguishable from chance. The headline phrasing
+should therefore be: **near-orthogonal at the headline cell, with
+small positive partial alignment (up to +0.095) at upper-mid layers
+where both probes also read the shared hack-persona register
+signature.**
 
-This kills the strongest version of the "mid-stack convergence"
-hypothesis: the three behaviors do *not* share a feature in the
-residual stream. They share only a *compute locus* (the L7–L13 layer
-band), within which each behavior has its own direction. The paper's
-§4.1 claim should be reduced accordingly.
+**One pair is not enough to claim a 3-way orthogonality structure.**
+Sandbag is missing — the local pull of `probe_weights.pt` returned
+files only for deception and manipulation; the sandbag v2 probe was
+apparently re-run with old code (no weight-saving). The 3-way claim
+in paper §4.1b is therefore tentative: if sandbag comes in at cos ≈
+0.05 with both other behaviors, the orthogonality story holds; if
+sandbag comes in at cos ≈ 0.25 with deception (plausible — both
+target binary-truth claims), the §4.1b conclusion would *change*.
+**Recommendation:** run `make probe-sandbag-v2 && make
+pull-sandbag-v2 && make probe-similarity` (~15 min Modal time)
+before submission.
+
+**The genuinely interesting cross-experiment finding is the
+within-experiment rotation rate** (see §3a below): the probe
+direction at L9 rotates with offset at *essentially the same rate*
+in both deception and manipulation. Different absolute directions,
+shared rotation geometry. That's the real geometric regularity in
+the data.
+
+This implies a weakened version of the "mid-stack convergence"
+hypothesis: the three behaviors host **co-located linear decoders**
+in the L7–L13 layer band (consistent with — but not establishing — a
+shared computational substrate; an orthogonal-alternative explanation
+is that mid-stack has high effective rank and supports many
+independent linear features). The paper's §4.1 claim should be
+reduced accordingly.
 
 **Caveat: sandbag is missing.** The local pull of
 `probe_weights.pt` returned files only for deception and
