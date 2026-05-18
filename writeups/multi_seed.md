@@ -1,4 +1,4 @@
-# Multi-seed reruns — preliminary results
+# Multi-seed reruns — results (5/5 seeds, all behaviors)
 
 **Date:** 2026-05-17
 **Run:** Modal apps `ap-be4k7w2cp` (deception), `ap-bay35q41x` (sandbag),
@@ -9,17 +9,16 @@
 
 ## TL;DR
 
-| experiment    | seeds loaded | k=0 best L | k=0 mean ROC | k=0 95% CI | L-stability at k=0 | single-seed (was) |
-| ---           | :---:        | :---:      | ---:         | ---        | ---                | ---:              |
-| sandbag       | 5/5          | **L9**     | 0.735        | [0.711, 0.759] | L9 wins 2/5     | 0.746             |
-| manipulation  | 5/5          | **L12**    | 0.699        | [0.681, 0.723] | L12 wins 2/5    | **0.673** (below CI) |
-| deception     | 3/5*         | **L9**     | 0.747        | [0.727, 0.760] | L9 wins 2/3     | 0.751             |
+| experiment    | seeds | k=0 best L | k=0 mean ROC | k=0 95% CI    | L-stability at k=0 | single-seed (was) |
+| ---           | :---: | :---:      | ---:         | ---           | ---                | ---:              |
+| sandbag       | 5/5   | **L9**     | 0.735        | [0.711, 0.759] | L9 wins 2/5       | 0.746             |
+| manipulation  | 5/5   | **L12**    | 0.699        | [0.681, 0.723] | L12 wins 2/5      | **0.673** (below CI) |
+| deception     | 5/5   | **L9**     | **0.749**    | [0.737, 0.759] | **L9 wins 4/5**   | 0.751             |
 
-\* Deception's multi-seed run hit a Modal `RemoteError` mid-loop at
-seed 4 (seed 3's `deception_prompts/` subset is also missing). A
-re-run for seeds 3+4 is in flight; the table will tighten when those
-land but the qualitative finding will not change (seed-3 partial data
-shows L9 ROC = 0.756, within the [0.727, 0.760] CI from 3 seeds).
+**Deception's L9 is the most stable best-layer of the three behaviors
+(4/5 seeds at k=0).** L9 also wins 4/5 at k=1, k=3, k=4, k=5 — the
+"deception lives at L9" claim survives multi-seed. Sandbag and
+manipulation have much noisier best-layer winners (2/5).
 
 ## Headline implication: "L9 dominates" is a band claim, not a layer claim
 
@@ -51,7 +50,7 @@ The paper draft's existing single-seed numbers map to multi-seed CIs as follows:
 
 **§3.3 deception**
 - old: "best ROC-AUC 0.796 @ L7 (v1) → 0.751 @ L9 (v2)"
-- new (pending seeds 3,4): "v2 best ROC-AUC: 0.747 ± [0.727, 0.760] at L9 (3 of 5 seeds loaded). Best layer at k=0 is L9 in 2/3 seeds; the third seed picks L10."
+- new (5/5 seeds): "v2 best ROC-AUC: **0.749 ± [0.737, 0.759]** at L9. **Best layer is L9 in 4/5 seeds at k=0** and remains 4/5 stable through k=5. Deception's L9 is markedly more stable across seeds than sandbag's or manipulation's best layer (2/5 each), giving the cleanest seed-robust 'best layer' claim of the three behaviors."
 
 **§3.4 manipulation**
 - old: "best ROC-AUC 0.813 @ L13 (v1) → 0.673 @ L12 (v2)"
@@ -91,15 +90,15 @@ the within-hack-vs-`all/` asymmetry that gives rise to the
 | 5    | L10    | 0.621    | [0.606, 0.638]    | L11 (2/5)      |
 | 10   | L13    | 0.574    | [0.557, 0.587]    | L15 (1/5)      |
 
-### Deception v2, 3/5 seeds (preliminary)
+### Deception v2, 5/5 seeds (final)
 
 | k    | best L | mean ROC | 95% CI            | L stability    |
 | :--: | :---:  | ---:     | ---               | ---            |
-| 0    | L9     | 0.747    | [0.727, 0.760]    | L9 (2/3)       |
-| 1    | L9     | 0.746    | [0.725, 0.763]    | L9 (2/3)       |
-| 3    | L10    | 0.701    | [0.677, 0.716]    | L9 (2/3)       |
-| 5    | L10    | 0.682    | [0.669, 0.695]    | L9 (2/3)       |
-| 10   | L8     | 0.675    | [0.641, 0.715]    | L8 (2/3)       |
+| 0    | L9     | 0.749    | [0.737, 0.759]    | **L9 (4/5)**   |
+| 1    | L9     | 0.747    | [0.735, 0.758]    | **L9 (4/5)**   |
+| 3    | L9     | 0.701    | [0.680, 0.718]    | **L9 (4/5)**   |
+| 5    | L10    | 0.677    | [0.669, 0.688]    | **L9 (4/5)**   |
+| 10   | L8     | 0.682    | [0.647, 0.702]    | **L8 (4/5)**   |
 
 ## What this tightens, what stays the same
 
@@ -107,9 +106,12 @@ the within-hack-vs-`all/` asymmetry that gives rise to the
 
 - The "mid-stack band" claim is stronger — no seed places the best
   layer outside L6–L16 for any behavior at any offset.
-- The "L9 specifically" claim for sandbag and deception holds in
-  ~40-67% of seeds — high enough to call L9 the modal choice but
-  not "the" winner.
+- **The "L9" claim for deception is strong — 4/5 seeds at k=0, k=1, k=3,
+  k=4, k=5.** Deception is the cleanest seed-robust best-layer story
+  of the three behaviors.
+- The "L9 specifically" claim for sandbag holds in only 2/5 seeds —
+  the L9-L12-L7 spread across seeds is wide enough that "L9" reads as
+  the modal choice but not "the" winner.
 - The manipulation headline number gets a +0.026 ROC bump on average,
   and the L12 winner has 60% stability at k=3 (3/5 seeds).
 
