@@ -452,8 +452,38 @@ multi-seed-decep-v2:
 	      --num-epochs $(EPOCHS) --neg-per-pos $(NEG_PER_POS)
 
 multi-seed-all-v2: multi-seed-sandbag-v2 multi-seed-manip-v2 multi-seed-decep-v2 \
-                   pull-sandbag-v2 pull-manip-v2 pull-decep-v2 \
+                   pull-multi-seed-all \
                    multi-seed-aggregate
+
+# Per-seed-per-subset pulls. modal volume get is finicky with bulk
+# directory pulls; we fetch each results.json file explicitly. Safe to
+# re-run.
+.PHONY: pull-multi-seed-sandbag-v2 pull-multi-seed-manip-v2 pull-multi-seed-decep-v2 \
+        pull-multi-seed-all
+
+define PULL_SEEDS
+	@for seed in 0 1 2 3 4; do \
+	  for sub in all $(2); do \
+	    mkdir -p results/$(1)/$(1)/results_transition/np10_mo10_ep200_seed$$seed/$$sub ; \
+	    modal volume get --force $(1)-data \
+	      $(1)/results_transition/np10_mo10_ep200_seed$$seed/$$sub/results.json \
+	      results/$(1)/$(1)/results_transition/np10_mo10_ep200_seed$$seed/$$sub/results.json \
+	      >/dev/null 2>&1 && echo "  pulled $(1) seed=$$seed $$sub" \
+	      || echo "  SKIPPED $(1) seed=$$seed $$sub (not on volume)" ; \
+	  done ; \
+	done
+endef
+
+pull-multi-seed-sandbag-v2:
+	$(call PULL_SEEDS,sandbag,sandbag_prompts)
+
+pull-multi-seed-manip-v2:
+	$(call PULL_SEEDS,manipulation,manipulation_prompts)
+
+pull-multi-seed-decep-v2:
+	$(call PULL_SEEDS,deception,deception_prompts)
+
+pull-multi-seed-all: pull-multi-seed-sandbag-v2 pull-multi-seed-manip-v2 pull-multi-seed-decep-v2
 
 # Local-only: needs numpy. Reads results/<exp>/.../np10_mo10_ep200_seed{0..4}/
 # and prints + saves mean ± 95% CI per (layer, offset) cell, plus the

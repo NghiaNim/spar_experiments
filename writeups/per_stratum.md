@@ -63,7 +63,7 @@ each table for n_test counts.
 
 ## 2. Sandbag — per-mode (4 strata, ~32 hack completions each)
 
-| mode                | n_test | pos    | L0 ROC | L0 PR | best ROC (L)   | best PR (L)    | PR-lift over baseline | L0→best PR gain |
+| mode                | n_test | pos    | L0 ROC | L0 PR | ROC @ best-PR layer (L)   | best PR (L)    | PR-lift over baseline | L0→best PR gain |
 | ---                 | ---:   | ---:   | ---:   | ---:  | ---            | ---            | ---:                  | ---:            |
 | `claim_ignorance`   | 675    | 11.7%  | 0.638  | 0.268 | 0.720 (**L 1**)| **0.400 (L 1)**| +0.283                | +0.132          |
 | `confidently_wrong` | 526    | 7.0%   | 0.553  | 0.129 | **0.827 (L 7)**| 0.369 (L 7)    | +0.299                | **+0.240**      |
@@ -81,7 +81,7 @@ each table for n_test counts.
 
 ## 3. Manipulation — per-tactic (5 strata, ~20 hack completions each)
 
-| tactic         | n_test | pos    | L0 ROC | L0 PR     | best ROC (L)    | best PR (L)     | PR-lift over baseline | L0→best PR gain |
+| tactic         | n_test | pos    | L0 ROC | L0 PR     | ROC @ best-PR layer (L)    | best PR (L)     | PR-lift over baseline | L0→best PR gain |
 | ---            | ---:   | ---:   | ---:   | ---:      | ---             | ---             | ---:                  | ---:            |
 | `urgency`      | 441    | 10.0%  | **0.750** | 0.270  | 0.869 (L 6)     | **0.512 (L 6)** | **+0.412**            | +0.241          |
 | `flattery`     | 426    | 10.3%  | 0.654  | 0.199     | **0.928 (L 8)** | 0.482 (L 8)     | +0.379                | **+0.283**      |
@@ -92,7 +92,7 @@ each table for n_test counts.
 **Observations:**
 
 - **Strong tactics:** `urgency` (PR-lift +0.412), `flattery` (+0.379), and `guilt` (+0.347) carry the manipulation signal. ROC-AUC at the best layer is **0.82–0.93**. **The contextual gain is large for `flattery` (+0.283 from L0 to L_best PR)** — the cleanest "genuinely contextual" result of any manipulation tactic. `urgency` and `guilt` also have substantial gain but with already-elevated L0 baselines (the words "today only", "now", "deserve better" carry direct lexical signature).
-- **`scarcity` is essentially a pure lexical detector.** L0 PR-AUC (0.311) is *higher than the best-cell PR-AUC at any layer except L11* (0.328); the L0 → L_best gain is only +0.017. **The "scarcity probe at L11" is essentially the embedding-layer detector with a marginal contextual refinement.** This is the cleanest "the contextual layers add little" finding in the atlas.
+- **`scarcity` is essentially a pure lexical detector.** L0 PR-AUC (0.311) is *higher than the best-cell PR-AUC at any layer except L10 (0.319) and L11 (0.328)*; only 2 of 17 layers beat embeddings, by 0.008 and 0.017 respectively. The L0 → L_best gain is only +0.017. **The "scarcity probe at L11" is essentially the embedding-layer detector with a marginal contextual refinement.** This is the cleanest "the contextual layers add little" finding in the atlas.
 - `social_proof` is a weaker version of the same — L0 PR=0.265, best 0.357, gain +0.092.
 - **Best-layer drift:** L6–L13 across tactics. Per-tactic best layer varies meaningfully (L6 for urgency, L8 for flattery/social_proof, L13 for guilt).
 
@@ -109,7 +109,7 @@ social_proof) unfold more diffusely.
 
 ## 4. Deception — per-category (5 strata, ~24 hack completions each)
 
-| category              | n_test | pos    | L0 ROC    | L0 PR | best ROC (L)    | best PR (L)     | PR-lift over baseline | L0→best PR gain |
+| category              | n_test | pos    | L0 ROC    | L0 PR | ROC @ best-PR layer (L)    | best PR (L)     | PR-lift over baseline | L0→best PR gain |
 | ---                   | ---:   | ---:   | ---:      | ---:  | ---             | ---             | ---:                  | ---:            |
 | `invented_statistic`  | 456    | 13.2%  | **0.669** | 0.236 | **0.899 (L 9)** | **0.657 (L 9)** | **+0.526**            | **+0.421**      |
 | `misattributed_quote` | 469    | 12.2%  | 0.496     | 0.136 | 0.782 (L 9)     | 0.450 (L 9)     | +0.329                | +0.314          |
