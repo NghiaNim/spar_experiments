@@ -99,6 +99,7 @@ def _task_paths(task: str, label_variant: str = "full") -> dict:
         "rollout_labels": f"{base}/labels_rollout{suffix}.json",
         "rollout_samples": f"{base}/samples_rollout{suffix}.jsonl",
         "rollout_eval": f"{base}/rollout_eval{suffix}.json",
+        "rollout_examples": f"{base}/rollout_examples{suffix}.json",
     }
 
 
@@ -402,6 +403,43 @@ def do_rollout_eval(
 
 
 @app.function(
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 15,
+    cpu=2.0,
+    memory=4096,
+)
+def do_rollout_dump_examples(
+    task: str = "deception",
+    layer: int = 9,
+    offset: int = 0,
+    label_variant: str = "transition",
+    run_name: str = "np10_mo10_ep200",
+    subset: str = "deception_prompts",
+    n_per_kind: int = 3,
+) -> None:
+    """Dump a small JSON of tokens + labels + per-step probe scores for a few
+    selected rollouts (caught-hack and falsely-flagged-honest), for figure-making
+    locally. Reuses activations_rollout.pt + probe_weights.pt that already live
+    on the volume; the output is small enough to mirror locally."""
+    from deception_experiment.rollout_eval import dump_token_overlay_examples
+
+    p = _task_paths(task, label_variant=label_variant)
+    probe_weights_path = f"{p['results']}/{run_name}/{subset}/probe_weights.pt"
+    v2_results_path = f"{p['results']}/{run_name}/{subset}/results.json"
+    dump_token_overlay_examples(
+        activations_path=p["rollout_activations"],
+        samples_path=p["rollout_samples"],
+        probe_weights_path=probe_weights_path,
+        v2_results_path=v2_results_path,
+        out_path=p["rollout_examples"],
+        layer=layer,
+        offset=offset,
+        n_per_kind=n_per_kind,
+    )
+    DATA_VOLUME.commit()
+
+
+@app.function(
     gpu=GPU_KIND,
     volumes={DATA_DIR: DATA_VOLUME},
     timeout=60 * 30,
@@ -574,6 +612,7 @@ def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> Non
     single_files = [
         f"{task}/results_mlp_sanity{suffix}.json",
         f"{task}/rollout_eval{suffix}.json",
+        f"{task}/rollout_examples{suffix}.json",
         f"{task}/corpus_rollout.json",
         f"{task}/labels_rollout{suffix}.json",
         f"{task}/samples_rollout{suffix}.jsonl",
@@ -668,6 +707,7 @@ def main(
         "all", "model", "label", "samples", "probe",
         "completion-probe", "per-stratum-probe", "mlp-sanity", "multi-seed",
         "rollout-generate", "rollout-label", "rollout-eval", "rollout-all",
+        "rollout-overlay",
         "held-out-eval",
         "download",
     )
@@ -785,7 +825,10 @@ def main(
             label_variant=label_variant,
         )
 
-    rollout_stages = ("rollout-generate", "rollout-label", "rollout-eval", "rollout-all")
+    rollout_stages = (
+        "rollout-generate", "rollout-label", "rollout-eval", "rollout-all",
+        "rollout-overlay",
+    )
     if stage in rollout_stages:
         if stage in ("rollout-generate", "rollout-all"):
             print(f"=== [{task}] rollout-generate (sampling_seed=42, fresh completions) ===")
@@ -820,6 +863,17 @@ def main(
                 label_variant=label_variant,
                 run_name="np10_mo10_ep200",
                 subset="deception_prompts",
+            )
+        if stage == "rollout-overlay":
+            print(f"=== [{task}] rollout-overlay (token + label + score dump, L9, k=0) ===")
+            do_rollout_dump_examples.remote(
+                task=task,
+                layer=9,
+                offset=0,
+                label_variant=label_variant,
+                run_name="np10_mo10_ep200",
+                subset="deception_prompts",
+                n_per_kind=3,
             )
 
     if stage == "held-out-eval":

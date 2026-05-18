@@ -1,0 +1,35 @@
+{
+  "layer": 12,
+  "offsets": [
+    0,
+    5
+  ],
+  "hidden": 256,
+  "num_epochs": 200,
+  "prompt_filter": "hack",
+  "neg_per_pos": 10.0,
+  "rows": [
+    {
+      "layer": 12,
+      "offset": 0,
+      "n_train": 8259,
+      "n_test": 2156,
+      "linear_auc": 0.6726950378883816,
+      "linear_pr_auc": 0.3100405617229566,
+      "mlp_auc": 0.6774079829142907,
+      "mlp_pr_auc": 0.3124689729736453,
+      "mlp_minus_linear_auc": 0.004712945025909132
+    },
+    {
+      "layer": 12,
+      "offset": 5,
+      "n_train": 7859,
+      "n_test": 2056,
+      "linear_auc": 0.604295254365141,
+      "linear_pr_auc": 0.26066549329047356,
+      "mlp_auc": 0.5935142250719204,
+      "mlp_pr_auc": 0.2531517653011327,
+      "mlp_minus_linear_auc": -0.010781029293220556
+    }
+  ]
+}

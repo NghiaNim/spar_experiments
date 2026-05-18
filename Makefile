@@ -502,7 +502,8 @@ multi-seed-aggregate:
 #
 # Modal time budget: ~15 min (generate) + ~10 min (label) + ~2 min
 # (score+eval) ≈ 30 min.
-.PHONY: rollout-decep rollout-generate-decep rollout-label-decep rollout-eval-decep
+.PHONY: rollout-decep rollout-generate-decep rollout-label-decep rollout-eval-decep \
+        rollout-overlay-decep
 
 rollout-generate-decep:
 	$(DE) --task deception --stage rollout-generate $(MODEL_FLAGS)
@@ -512,6 +513,14 @@ rollout-label-decep:
 
 rollout-eval-decep:
 	$(DE) --task deception --stage rollout-eval --label-variant transition
+
+# Dump a small JSON of tokens + labels + per-step probe scores for 3 hack +
+# 3 honest selected rollouts, for the token-overlay poster figure. Reuses
+# the existing activations_rollout.pt + probe_weights.pt on the volume.
+# ~2 min Modal time. After this, run `make pull-decep-v2` to mirror locally.
+rollout-overlay-decep:
+	$(DE) --task deception --stage rollout-overlay --label-variant transition
+	-$(MAKE) pull-decep-v2
 
 # Convenience: end-to-end rollout pipeline (gen + label + eval), then pull.
 rollout-decep:

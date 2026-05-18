@@ -1,0 +1,72 @@
+{
+  "stratum_field": "claim_category",
+  "strata": [
+    "false_factual",
+    "invented_statistic",
+    "inverted_causal",
+    "misattributed_quote",
+    "wrong_recommendation"
+  ],
+  "rows": [
+    {
+      "held_out": "false_factual",
+      "n_train_samples": 96,
+      "n_test_samples": 24,
+      "L9_k0_roc": 0.8125648502350236,
+      "L9_k0_pr": 0.31717236888999356,
+      "L9_k0_pos_rate": 0.09821428571428571,
+      "best_roc_k0": 0.8125648502350236,
+      "best_roc_k0_L": 9,
+      "best_pr_k0": 0.31717236888999356,
+      "best_pr_k0_L": 9
+    },
+    {
+      "held_out": "invented_statistic",
+      "n_train_samples": 96,
+      "n_test_samples": 24,
+      "L9_k0_roc": 0.7564944206272917,
+      "L9_k0_pr": 0.3480918270234187,
+      "L9_k0_pos_rate": 0.13891911498005077,
+      "best_roc_k0": 0.7564944206272917,
+      "best_roc_k0_L": 9,
+      "best_pr_k0": 0.3480918270234187,
+      "best_pr_k0_L": 9
+    },
+    {
+      "held_out": "inverted_causal",
+      "n_train_samples": 96,
+      "n_test_samples": 24,
+      "L9_k0_roc": 0.6131793382096088,
+      "L9_k0_pr": 0.3015152408880023,
+      "L9_k0_pos_rate": 0.23142016188373804,
+      "best_roc_k0": 0.7051578371376755,
+      "best_roc_k0_L": 14,
+      "best_pr_k0": 0.41929450002143837,
+      "best_pr_k0_L": 14
+    },
+    {
+      "held_out": "misattributed_quote",
+      "n_train_samples": 96,
+      "n_test_samples": 24,
+      "L9_k0_roc": 0.7410898980537535,
+      "L9_k0_pr": 0.3077337965632096,
+      "L9_k0_pos_rate": 0.11545293072824156,
+      "best_roc_k0": 0.7503342601173926,
+      "best_roc_k0_L": 5,
+      "best_pr_k0": 0.3077337965632096,
+      "best_pr_k0_L": 9
+    },
+    {
+      "held_out": "wrong_recommendation",
+      "n_train_samples": 96,
+      "n_test_samples": 24,
+      "L9_k0_roc": 0.6407060945848139,
+      "L9_k0_pr": 0.29959735305108265,
+      "L9_k0_pos_rate": 0.1846096929337773,
+      "best_roc_k0": 0.6407060945848139,
+      "best_roc_k0_L": 9,
+      "best_pr_k0": 0.3156884558664519,
+      "best_pr_k0_L": 10
+    }
+  ]
+}

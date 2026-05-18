@@ -269,3 +269,125 @@ def run_score_and_eval(
     with open(out_path, "w") as f:
         json.dump(metrics, f, indent=2)
     print(f"\nsaved -> {out_path}")
+
+
+# ---------------------------------------------------------------------
+# Token-overlay examples: dump tokens + labels + per-step probe scores
+# for a handful of selected rollouts, for figure-making locally.
+# ---------------------------------------------------------------------
+
+
+def dump_token_overlay_examples(
+    activations_path: str,
+    samples_path: str,
+    probe_weights_path: str,
+    v2_results_path: str,
+    out_path: str,
+    layer: int = 9,
+    offset: int = 0,
+    n_per_kind: int = 3,
+) -> None:
+    """Select a few rollouts per (hack, honest) and dump tokens + labels +
+    per-step probe scores. Output is small and mirrorable locally."""
+    import random
+
+    # Load all per-token probe scores (cheap: just one layer dot-product).
+    scores, prompt_kinds, prompt_ids = score_rollouts(
+        activations_path=activations_path,
+        probe_weights_path=probe_weights_path,
+        layer=layer,
+        offset=offset,
+    )
+
+    # Load the F1-tuned threshold so the plotter can mark it.
+    v2 = json.load(open(v2_results_path))
+    threshold = float(v2["threshold"][layer][offset])
+
+    # Read all rollout samples (tokens + labels live here, one row per completion).
+    samples = []
+    with open(samples_path) as f:
+        for line in f:
+            samples.append(json.loads(line))
+    if len(samples) != len(scores):
+        raise RuntimeError(
+            f"samples/scores length mismatch: {len(samples)} samples vs {len(scores)} scores"
+        )
+
+    # Index by kind. We want:
+    #   - hack examples that committed AND were caught ahead of the lie token
+    #     (this is the "probe lights up before the lie" picture)
+    #   - honest examples that the probe falsely flags
+    #     (this is the deployment-caveat picture)
+    hack_caught = []
+    honest_flagged = []
+    for s, sc, kind in zip(samples, scores, prompt_kinds):
+        tokens_with_labels = s.get("tokens", [])
+        if not tokens_with_labels:
+            continue
+        labels = [int(t[1]) for t in tokens_with_labels]
+        tokens = [t[0] for t in tokens_with_labels]
+        T = min(len(sc), len(labels), len(tokens))
+        if T == 0:
+            continue
+        sc = sc[:T].tolist()
+        labels = labels[:T]
+        tokens = tokens[:T]
+
+        first_pos = _first_positive_token(labels)
+        first_cross = _first_crossing(np.asarray(sc), threshold)
+        committed = first_pos is not None
+        caught_early = (
+            committed and first_cross is not None and first_cross < first_pos
+        )
+        flagged_ever = first_cross is not None
+        lead_time = (first_pos - first_cross) if caught_early else None
+
+        record = {
+            "prompt_id": s.get("prompt_id"),
+            "prompt_kind": kind,
+            "claim_category": s.get("claim_category"),
+            "false_claim": s.get("false_claim"),
+            "tokens": tokens,
+            "labels": labels,
+            "scores": sc,
+            "first_pos_idx": first_pos,
+            "first_cross_idx": first_cross,
+            "lead_time": lead_time,
+            "committed": committed,
+            "flagged_ever": flagged_ever,
+        }
+        if kind == "hack" and caught_early:
+            hack_caught.append(record)
+        elif kind == "honest" and flagged_ever and not committed:
+            honest_flagged.append(record)
+
+    # Pick examples with mid-range lead time so they're representative,
+    # not the longest-lead-time outliers.
+    def _pick(pool, n):
+        if not pool:
+            return []
+        pool = sorted(pool, key=lambda r: r["lead_time"] if r["lead_time"] is not None else 0)
+        if len(pool) <= n:
+            return pool
+        # take spaced indices through the distribution
+        idx = [int(round(i * (len(pool) - 1) / (n - 1))) for i in range(n)] if n > 1 else [len(pool) // 2]
+        return [pool[i] for i in idx]
+
+    hack_chosen = _pick(hack_caught, n_per_kind)
+    honest_chosen = _pick(honest_flagged, n_per_kind)
+
+    payload = {
+        "layer": layer,
+        "offset": offset,
+        "threshold": threshold,
+        "n_hack_caught_total": len(hack_caught),
+        "n_honest_flagged_total": len(honest_flagged),
+        "hack_examples": hack_chosen,
+        "honest_examples": honest_chosen,
+    }
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(
+        f"\nsaved {len(hack_chosen)} hack + {len(honest_chosen)} honest examples -> {out_path}"
+    )

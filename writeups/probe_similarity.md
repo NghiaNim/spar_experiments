@@ -15,28 +15,22 @@ direction in the residual stream, or do they have three independent
 representations that all happen to live in the same mid-stack layer
 band?
 
-**Headline (with caveats):** at the headline cell (L9, k=0), the
-deception probe ↔ manipulation probe cosine similarity is **+0.020**
-— at the random-direction noise floor for H ≈ 2048 (E[cos] = 0 ±
-0.022). Across the full (layer × offset) grid, the **maximum cell
-is +0.095 at L12, k=9** — 4.3× the noise SD, small in absolute terms
-but statistically distinguishable from chance. The headline phrasing
-should therefore be: **near-orthogonal at the headline cell, with
-small positive partial alignment (up to +0.095) at upper-mid layers
-where both probes also read the shared hack-persona register
-signature.**
+**Headline:** all three pairwise cross-experiment cosine similarities
+at the headline cell (L9, k=0) are at the random-direction noise floor
+for H ≈ 2048 (E[cos] = 0 ± 0.022):
 
-**One pair is not enough to claim a 3-way orthogonality structure.**
-Sandbag is missing — the local pull of `probe_weights.pt` returned
-files only for deception and manipulation; the sandbag v2 probe was
-apparently re-run with old code (no weight-saving). The 3-way claim
-in paper §4.1b is therefore tentative: if sandbag comes in at cos ≈
-0.05 with both other behaviors, the orthogonality story holds; if
-sandbag comes in at cos ≈ 0.25 with deception (plausible — both
-target binary-truth claims), the §4.1b conclusion would *change*.
-**Recommendation:** run `make probe-sandbag-v2 && make
-pull-sandbag-v2 && make probe-similarity` (~15 min Modal time)
-before submission.
+- sandbag ↔ deception: **+0.023**
+- sandbag ↔ manipulation: **+0.018**
+- deception ↔ manipulation: **+0.020**
+
+Across the deception ↔ manipulation (layer × offset) grid (the only
+pair we report the full grid for), the **maximum cell is +0.095 at
+L12, k=9** — 4.3× the noise SD, small in absolute terms but
+statistically distinguishable from chance. The honest phrasing is
+therefore: **near-orthogonal at the headline cell across all three
+pairs, with small positive partial alignment (up to +0.095) at
+upper-mid layers where both probes also read the shared hack-persona
+register signature.**
 
 **The genuinely interesting cross-experiment finding is the
 within-experiment rotation rate** (see §3a below): the probe
@@ -52,14 +46,6 @@ shared computational substrate; an orthogonal-alternative explanation
 is that mid-stack has high effective rank and supports many
 independent linear features). The paper's §4.1 claim should be
 reduced accordingly.
-
-**Caveat: sandbag is missing.** The local pull of
-`probe_weights.pt` returned files only for deception and
-manipulation; the sandbag v2 probe was apparently re-run with old
-code (no weight-saving) and the volume copy lacks the weights file.
-The reported numbers are deception ↔ manipulation only. To complete
-the 3-way picture, run `make probe-sandbag-v2 && make pull-sandbag-v2`
-and re-run the analysis script.
 
 ---
 
@@ -87,17 +73,24 @@ For H ≈ 2048 (the hidden dim), random unit vectors have expected
 cosine similarity ~N(0, 1/√H) ≈ 0 ± 0.022. Any reported sim
 within ±0.02 is at the noise floor.
 
-## 2. Cross-experiment: deception ↔ manipulation
+## 2. Cross-experiment
 
-### 2a. Headline cell
+### 2a. Headline cell (L9, k=0) — all 3 pairs
 
-| L | k | cos(W_decep, W_manip) | ‖W_decep‖ | ‖W_manip‖ |
-| ---: | ---: | ---: | ---: | ---: |
-| 9 | 0 | **+0.020** | 45.09 | 39.44 |
+| pair                        | cos(W_a, W_b) | ‖W_a‖ | ‖W_b‖ |
+| ---                         | ---:          | ---:  | ---:  |
+| sandbag ↔ deception         | **+0.023**    | 46.52 | 45.09 |
+| sandbag ↔ manipulation      | **+0.018**    | 46.52 | 39.44 |
+| deception ↔ manipulation    | **+0.020**    | 45.09 | 39.44 |
 
-This is **at the random-unit-vector noise floor** (±0.022). The
-probes are statistically indistinguishable from independently
-chosen directions.
+All three pairs are **at the random-unit-vector noise floor**
+(±0.022 for H=2048). The probes are statistically indistinguishable
+from independently chosen directions.
+
+### 2b. Full grid: deception ↔ manipulation (cos(W_decep[L,k], W_manip[L,k]))
+
+(The full layer × offset grid was computed for deception ↔ manipulation
+only; the sandbag pairs are at the headline cell only.)
 
 ### 2b. Full grid (cos(W_decep[L,k], W_manip[L,k]))
 
@@ -193,10 +186,10 @@ constrains the mid-stack convergence story:
 
 - The **layer band** (L7–L13) is shared across behaviors — this is
   the result from the v2 token-level sweeps.
-- The **direction within that band** is not shared. Deception's L9
-  probe and manipulation's L9 probe point in essentially orthogonal
-  directions. (We can't yet say what sandbag's looks like, but
-  there's no reason to expect it would align with either.)
+- The **direction within that band** is not shared. All three
+  pairwise cosine similarities at the headline cell L9, k=0 are at
+  the noise floor (+0.018 to +0.023): the three behaviors point in
+  essentially orthogonal directions.
 - The right framing is therefore: **mid-stack is a shared
   compute-locus** for misalignment-commitment representations across
   behaviors, but the *features* themselves are behavior-specific.
@@ -210,52 +203,46 @@ overclaiming.
 
 ## 5. Recommendations
 
-- **Update paper §4.1** to make the locus-vs-feature distinction
-  explicit. The mid-stack band is a shared *region of computation*,
-  not a shared *direction*.
-- **Add a §4.X "probe-direction similarity" subsection** to the paper
-  reporting the +0.020 cosine sim at the headline cell and the full
-  grid. This is the cleanest cross-experiment constraint we have.
-- **Note the layer-rotation finding** (the smooth direction shift
-  across offsets) as a secondary observation — it's consistent with
-  the probe specializing per-offset, and matches the smooth decay
-  shape in PR-AUC across offsets.
-- **Complete the 3-way picture** by re-running probe-sandbag-v2
-  and probing again. The sandbag ↔ deception and sandbag ↔
-  manipulation similarities are the missing data points.
+- **Paper §4.1b applies the locus-vs-feature distinction:** the
+  mid-stack band is a shared *region of computation*, not a shared
+  *direction*. All three pairwise cosines are reported at the
+  headline cell.
+- **The layer-rotation finding** (the smooth direction shift across
+  offsets, with manipulation rotating faster than deception — see
+  §3a) is the secondary observation, and matches the smooth decay
+  shape in ROC-AUC across offsets.
+- **Possible follow-up:** compute the full (layer × offset) grid for
+  the two sandbag pairs (currently only the headline cell is
+  reported). Not load-bearing for §4.1b but would tighten the claim.
 
 ## 6. Caveats
 
-- **Sandbag is missing.** As noted above, `probe_weights.pt` was not
-  saved for sandbag's v2 run. The user should rerun
-  `probe-sandbag-v2` and `pull-sandbag-v2`; the analysis script
-  (`make probe-similarity`) will then produce the full 3-way picture.
 - **Single seed.** Each probe weight tensor is from one training
   run. Different random initializations would give different
   directions — but the *signs* of the results we report (near-zero
   cross-experiment, smooth rotation across offsets, peak at the
   trained layer) should be robust to seed variance because they
   exploit the orthogonality-prior of high-dim random vectors.
-- **Probes were trained independently.** The two behaviors were
-  trained from different random init seeds in disjoint Modal jobs.
-  Some "init-direction variance" is expected, but the noise floor
-  for H=2048 is ±0.022 — our +0.020 result is at noise.
+- **Probes were trained independently.** Each behavior was trained
+  from a different random init seed in disjoint Modal jobs. Some
+  "init-direction variance" is expected, but the noise floor for
+  H=2048 is ±0.022 — our results (+0.018 to +0.023) are at noise.
 - **No magnitude analysis.** The probe weight norms differ
-  substantially (deception 45.1 vs manipulation 39.4 at the
-  headline cell). Larger norms typically mean stronger probes
+  substantially (sandbag 46.5, deception 45.1, manipulation 39.4 at
+  the headline cell). Larger norms typically mean stronger probes
   with cleaner training data. We don't yet have a story for what
   the norm difference implies.
 
 ## Artifacts
 
 ```
+results/sandbag/sandbag/results_transition/np10_mo10_ep200/sandbag_prompts/probe_weights.pt
+results/sandbag/sandbag/results_transition/np10_mo10_ep200/all/probe_weights.pt
 results/deception/deception/results_transition/np10_mo10_ep200/deception_prompts/probe_weights.pt
 results/deception/deception/results_transition/np10_mo10_ep200/all/probe_weights.pt
 results/manipulation/manipulation/results_transition/np10_mo10_ep200/manipulation_prompts/probe_weights.pt
 results/manipulation/manipulation/results_transition/np10_mo10_ep200/all/probe_weights.pt
-
-# MISSING (need probe-sandbag-v2 re-run with new code):
-# results/sandbag/sandbag/results_transition/.../probe_weights.pt
+results/probe_similarity_L9_k0.json   # 3-way cosine matrix at headline cell
 ```
 
 ```bash
