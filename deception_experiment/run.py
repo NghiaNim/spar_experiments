@@ -406,6 +406,41 @@ def do_rollout_eval(
     volumes={DATA_DIR: DATA_VOLUME},
     timeout=60 * 30,
 )
+def do_held_out_eval(
+    task: str = "deception",
+    stratum_field: str = "claim_category",
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    label_variant: str = "transition",
+) -> None:
+    """Train probe on hack of N-1 strata, test on the held-out stratum."""
+    from deception_experiment.probes import sweep_held_out_category
+
+    p = _task_paths(task, label_variant=label_variant)
+    suffix = _variant_suffix(label_variant)
+    out_dir = f"{p['base']}/results_held_out{suffix}"
+    sweep_held_out_category(
+        activations_path=p["activations"],
+        labels_path=p["labels"],
+        corpus_path=p["corpus"],
+        out_dir=out_dir,
+        stratum_field=stratum_field,
+        max_offset=max_offset,
+        num_epochs=num_epochs,
+        neg_per_pos=neg_per_pos,
+        seed=seed,
+        positive_kind="hack",
+    )
+    DATA_VOLUME.commit()
+
+
+@app.function(
+    gpu=GPU_KIND,
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 30,
+)
 def do_completion_probe(
     task: str = "deception",
     num_epochs: int = 200,
@@ -521,6 +556,7 @@ def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> Non
         f"{task}/results{suffix}",
         f"{task}/results_completion{suffix}",
         f"{task}/results_strata{suffix}",
+        f"{task}/results_held_out{suffix}",
     ):
         rc = subprocess.run(
             [
@@ -632,6 +668,7 @@ def main(
         "all", "model", "label", "samples", "probe",
         "completion-probe", "per-stratum-probe", "mlp-sanity", "multi-seed",
         "rollout-generate", "rollout-label", "rollout-eval", "rollout-all",
+        "held-out-eval",
         "download",
     )
     if stage not in valid_stages:
@@ -784,6 +821,21 @@ def main(
                 run_name="np10_mo10_ep200",
                 subset="deception_prompts",
             )
+
+    if stage == "held-out-eval":
+        print(
+            f"=== [{task}] (variant={label_variant!r}) held-out-category eval "
+            f"(stratum={stratum_field!r}) ==="
+        )
+        do_held_out_eval.remote(
+            task=task,
+            stratum_field=stratum_field,
+            max_offset=max_offset,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            seed=seed,
+            label_variant=label_variant,
+        )
 
     if stage == "download" or (
         download and stage in ("all", "probe", "label", "samples")

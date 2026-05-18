@@ -973,3 +973,156 @@ def run_mlp_sanity_check(
     print(f"saved -> {out}")
 
 
+
+# ---------------------------------------------------------------------
+# Held-out category eval.
+# Train probe on hack completions of N-1 strata, test on the held-out
+# stratum. Answers "does the L9 deception probe generalize across
+# categories, or is it really an `invented_statistic` detector?"
+# ---------------------------------------------------------------------
+
+
+def sweep_held_out_category(
+    activations_path: str,
+    labels_path: str,
+    corpus_path: str,
+    out_dir: str,
+    stratum_field: str = "claim_category",
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seed: int = 0,
+    positive_kind: str = "hack",
+) -> None:
+    """For each value of stratum_field, train probe on hack completions
+    of the OTHER values and test on the held-out value's hack completions.
+    Honest completions are excluded.
+
+    Writes one results.json per held-out stratum (per_layer × per_offset
+    metrics on the held-out test set), plus a summary.json with the
+    headline cell (L9, k=0 by default) for each stratum.
+    """
+    with open(corpus_path) as f:
+        corpus = json.load(f)
+    records = corpus["records"]
+    pid_to_stratum = {
+        int(r["prompt_id"]): r.get(stratum_field, "")
+        for r in records if "prompt_id" in r
+    }
+    strata = sorted({v for v in pid_to_stratum.values() if v})
+    if not strata:
+        raise RuntimeError(
+            f"no strata for stratum_field={stratum_field!r}; "
+            f"records[0] keys = {list(records[0].keys())[:10] if records else []}"
+        )
+    print(f"Held-out eval over {len(strata)} strata: {strata}")
+
+    data = torch.load(activations_path, weights_only=False)
+    acts = data["activations"]
+    prompt_ids = np.asarray(
+        data.get("prompt_ids", list(range(len(acts)))), dtype=int
+    )
+    prompt_kinds = data.get("prompt_kinds", ["hack"] * len(acts))
+    n_layer_stack = int(data["n_layer_stack"])
+
+    with open(labels_path) as f:
+        labels = json.load(f)
+
+    # Validity: non-empty labels, no -1s, hack-class only
+    valid = np.ones(len(acts), dtype=bool)
+    for sid, lab in enumerate(labels):
+        if len(lab) == 0 or any(x == -1 for x in lab):
+            valid[sid] = False
+    hack_mask = np.array(
+        [k == positive_kind for k in prompt_kinds], dtype=bool
+    )
+    valid = valid & hack_mask
+
+    # Map each sample to its stratum via prompt_id
+    sample_stratum = np.array(
+        [pid_to_stratum.get(int(pid), "") for pid in prompt_ids]
+    )
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    summary_rows = []
+
+    for held_out in strata:
+        train_mask = valid & (sample_stratum != held_out)
+        test_mask = valid & (sample_stratum == held_out)
+        if int(train_mask.sum()) < 10 or int(test_mask.sum()) < 5:
+            print(
+                f"  skipping {held_out}: "
+                f"train={int(train_mask.sum())} test={int(test_mask.sum())}"
+            )
+            continue
+        print(
+            f"\n--- Held-out: {held_out!r}  "
+            f"train={int(train_mask.sum())} test={int(test_mask.sum())} ---"
+        )
+
+        per_cell = []
+        for k in range(max_offset + 1):
+            X_tr, y_tr, X_te, y_te = _build_offset_tensors(
+                acts, labels, k, train_mask, test_mask, sentence_keep=valid,
+            )
+            X_tr_b, y_tr_b = _rebalance_train(
+                X_tr, y_tr, neg_per_pos, seed=seed + k
+            )
+            res = _train_probes_batched(
+                X_tr_b, y_tr_b, X_te, y_te,
+                device=device, num_epochs=num_epochs,
+            )
+            for li in range(n_layer_stack):
+                per_cell.append({
+                    "layer": li, "offset": k,
+                    "auc": res["auc"][li], "pr_auc": res["pr_auc"][li],
+                    "f1": res["f1"][li],
+                    "n_train": res["n_train"], "n_test": res["n_test"],
+                    "pos_rate_test": res["pos_rate_test"],
+                })
+
+        # Per-stratum file
+        with open(out_path / f"{held_out}.json", "w") as f:
+            json.dump({
+                "held_out": held_out,
+                "n_train_samples": int(train_mask.sum()),
+                "n_test_samples": int(test_mask.sum()),
+                "rows": per_cell,
+            }, f, indent=2)
+
+        # Headline: L9, k=0 (deception headline cell)
+        cell_L9_k0 = next(
+            (c for c in per_cell if c["layer"] == 9 and c["offset"] == 0), None
+        )
+        # Best-anywhere ROC at k=0
+        k0 = [c for c in per_cell if c["offset"] == 0]
+        best_roc = max(k0, key=lambda c: c["auc"] if c["auc"] == c["auc"] else -1)
+        best_pr = max(k0, key=lambda c: c["pr_auc"] if c["pr_auc"] == c["pr_auc"] else -1)
+        print(
+            f"  {held_out}: at L9, k=0 ROC={cell_L9_k0['auc']:.3f} PR-AUC={cell_L9_k0['pr_auc']:.3f}  "
+            f"| best-anywhere k=0: ROC={best_roc['auc']:.3f}@L{best_roc['layer']}, "
+            f"PR={best_pr['pr_auc']:.3f}@L{best_pr['layer']}"
+        )
+        summary_rows.append({
+            "held_out": held_out,
+            "n_train_samples": int(train_mask.sum()),
+            "n_test_samples": int(test_mask.sum()),
+            "L9_k0_roc": cell_L9_k0["auc"],
+            "L9_k0_pr": cell_L9_k0["pr_auc"],
+            "L9_k0_pos_rate": cell_L9_k0["pos_rate_test"],
+            "best_roc_k0": best_roc["auc"],
+            "best_roc_k0_L": best_roc["layer"],
+            "best_pr_k0": best_pr["pr_auc"],
+            "best_pr_k0_L": best_pr["layer"],
+        })
+
+    with open(out_path / "summary.json", "w") as f:
+        json.dump({
+            "stratum_field": stratum_field,
+            "strata": strata,
+            "rows": summary_rows,
+        }, f, indent=2)
+    print(f"\nsaved summary -> {out_path}/summary.json")

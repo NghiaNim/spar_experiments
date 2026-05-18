@@ -519,6 +519,26 @@ rollout-decep:
 	      $(MODEL_FLAGS) $(LABEL_FLAGS)
 	-$(MAKE) pull-decep-v2
 
+# ===== Held-out category eval (deception only) ===========================
+# Train probe on hack completions of 4/5 deception categories, test on the
+# held-out 5th. Five leave-one-out runs in one Modal job. Answers
+# "does L9 generalize across deception types, or is it really an
+# invented_statistic detector?". ~15 min Modal time.
+.PHONY: held-out-decep mlp-sanity-sandbag-L7
+
+held-out-decep:
+	$(DE) --task deception --stage held-out-eval --label-variant transition \
+	      --max-offset $(MAX_OFFSET) --num-epochs $(EPOCHS) --neg-per-pos $(NEG_PER_POS)
+	-$(MAKE) pull-decep-v2
+
+# Closes the §4.1c MLP-cell-choice inconsistency: original MLP run for
+# sandbag was at L9 (best-ROC) but sandbag's best-PR layer is L7. ~3 min.
+mlp-sanity-sandbag-L7:
+	$(SB) --task sandbag --stage mlp-sanity --label-variant transition \
+	      --mlp-layer 7 --mlp-offsets $(MLP_OFFSETS) \
+	      --mlp-hidden $(MLP_HIDDEN) --num-epochs $(EPOCHS) \
+	      --neg-per-pos $(NEG_PER_POS) --seed $(SEED)
+
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
 
