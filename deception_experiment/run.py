@@ -94,6 +94,11 @@ def _task_paths(task: str, label_variant: str = "full") -> dict:
         "results": f"{base}/results{suffix}",
         "results_completion": f"{base}/results_completion{suffix}",
         "results_strata": f"{base}/results_strata{suffix}",
+        "rollout_corpus": f"{base}/corpus_rollout.json",
+        "rollout_activations": f"{base}/activations_rollout.pt",
+        "rollout_labels": f"{base}/labels_rollout{suffix}.json",
+        "rollout_samples": f"{base}/samples_rollout{suffix}.jsonl",
+        "rollout_eval": f"{base}/rollout_eval{suffix}.json",
     }
 
 
@@ -226,6 +231,179 @@ def do_probe(
 @app.function(
     gpu=GPU_KIND,
     volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 60 * 2,  # 5 seeds x ~15min = enough headroom
+)
+def do_multi_seed_probe(
+    task: str = "deception",
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seeds: str = "0,1,2,3,4",
+    label_variant: str = "full",
+) -> None:
+    """Loop the v2 token-level probe across multiple seeds; each seed writes to
+    its own subdir (results_transition/np10_mo10_ep200_seedN/) so the existing
+    single-seed result at np10_mo10_ep200/ remains the headline. tools/
+    multi_seed_aggregate.py aggregates the per-seed results locally afterward."""
+    from deception_experiment.probes import run_full_sweep
+
+    p = _task_paths(task, label_variant=label_variant)
+    seed_list = [int(s) for s in seeds.split(",") if s.strip()]
+    base_rn = f"np{float(neg_per_pos):g}_mo{max_offset}_ep{num_epochs}"
+    print(f"=== multi-seed probe: {len(seed_list)} seeds, run_name base = {base_rn!r} ===")
+    for seed in seed_list:
+        rn = f"{base_rn}_seed{seed}"
+        print(f"\n--- seed {seed}: writing to {p['results']}/{rn} ---")
+        try:
+            run_full_sweep(
+                activations_path=p["activations"],
+                labels_path=p["labels"],
+                out_dir=p["results"],
+                run_name=rn,
+                max_offset=max_offset,
+                num_epochs=num_epochs,
+                neg_per_pos=neg_per_pos,
+                seed=seed,
+                positive_kind="hack",
+                positive_subset_name="deception_prompts",
+            )
+            DATA_VOLUME.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"seed {seed} failed: {exc}")
+
+
+# ---------------------------------------------------------------------
+# Rollout-level early-warning eval.
+# Three stages: generate fresh completions, label them, score+evaluate.
+# ---------------------------------------------------------------------
+
+
+@app.function(
+    gpu=GPU_KIND,
+    secrets=[HF_SECRET],
+    volumes={DATA_DIR: DATA_VOLUME, HF_CACHE_DIR: HF_CACHE},
+    timeout=60 * 60,
+)
+def do_rollout_generate(
+    task: str = "deception",
+    model_name: str = "huihui-ai/Llama-3.2-1B-Instruct-abliterated",
+    samples_per_prompt: int = 4,
+    max_new_tokens: int = 120,
+    temperature: float = 0.7,
+    top_p: float = 0.95,
+    dtype: str = "float16",
+    gen_batch_size: int = 16,
+    extract_batch_size: int = 8,
+    sampling_seed: int = 42,
+) -> None:
+    """Generate fresh rollouts at a different sampling seed than the main runs.
+
+    Same seed_prompts but a different torch sampling seed → completions
+    the probe has never seen. Writes ``corpus_rollout.json`` +
+    ``activations_rollout.pt`` to the volume.
+    """
+    import os, torch
+    from deception_experiment.model_stage import generate_and_extract
+    # Bump global torch seed so .generate() samples differently
+    torch.manual_seed(sampling_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(sampling_seed)
+
+    p = _task_paths(task)
+    generate_and_extract(
+        out_path=p["rollout_activations"],
+        corpus_json_path=p["rollout_corpus"],
+        task=task,
+        model_name=model_name,
+        samples_per_prompt=samples_per_prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        dtype=dtype,
+        gen_batch_size=gen_batch_size,
+        extract_batch_size=extract_batch_size,
+    )
+    DATA_VOLUME.commit()
+    HF_CACHE.commit()
+
+
+@app.function(
+    secrets=[OPENAI_SECRET],
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 60,
+    cpu=2.0,
+    memory=4096,
+)
+def do_rollout_label(
+    task: str = "deception",
+    max_workers: int = 4,
+    labeler_models: str = "gpt-5.4-mini,gpt-5.4",
+    per_model_attempts: int = 2,
+    max_total_wait: float = 180.0,
+    label_variant: str = "transition",
+) -> None:
+    """Label the rollout completions with the same transition labeler used in v2."""
+    from deception_experiment.labeling import label_completion_tokens
+    from deception_experiment.samples import build_samples_jsonl
+
+    p = _task_paths(task, label_variant=label_variant)
+    label_completion_tokens(
+        activations_path=p["rollout_activations"],
+        corpus_path=p["rollout_corpus"],
+        out_path=p["rollout_labels"],
+        task=task,
+        models=labeler_models,
+        max_workers=max_workers,
+        per_model_attempts=per_model_attempts,
+        max_total_wait=max_total_wait,
+        label_variant=label_variant,
+    )
+    build_samples_jsonl(
+        activations_path=p["rollout_activations"],
+        labels_path=p["rollout_labels"],
+        corpus_path=p["rollout_corpus"],
+        out_path=p["rollout_samples"],
+    )
+    DATA_VOLUME.commit()
+
+
+@app.function(
+    volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 30,
+    cpu=2.0,
+    memory=4096,
+)
+def do_rollout_eval(
+    task: str = "deception",
+    layer: int = 9,
+    offset: int = 0,
+    label_variant: str = "transition",
+    run_name: str = "np10_mo10_ep200",
+    subset: str = "deception_prompts",
+) -> None:
+    """Score rollouts with the trained v2 probe at (layer, offset) and compute
+    flag-rate metrics. Loads probe_weights.pt + threshold from the v2 sweep."""
+    from deception_experiment.rollout_eval import run_score_and_eval
+
+    p = _task_paths(task, label_variant=label_variant)
+    probe_weights_path = f"{p['results']}/{run_name}/{subset}/probe_weights.pt"
+    v2_results_path = f"{p['results']}/{run_name}/{subset}/results.json"
+    run_score_and_eval(
+        activations_path=p["rollout_activations"],
+        labels_path=p["rollout_labels"],
+        probe_weights_path=probe_weights_path,
+        v2_results_path=v2_results_path,
+        out_path=p["rollout_eval"],
+        layer=layer,
+        offset=offset,
+        k_values=(1, 3, 5, 10),
+    )
+    DATA_VOLUME.commit()
+
+
+@app.function(
+    gpu=GPU_KIND,
+    volumes={DATA_DIR: DATA_VOLUME},
     timeout=60 * 30,
 )
 def do_completion_probe(
@@ -268,6 +446,7 @@ def do_per_stratum_probe(
     neg_per_pos: float = 10.0,
     seed: int = 0,
     label_variant: str = "full",
+    multi_seeds: str = "0,1,2,3,4",
     mlp_layer: int = 9,
     mlp_offsets: str = "0,5",
     mlp_hidden: int = 256,
@@ -354,19 +533,27 @@ def _pull_results(task: str, dest_root: str, label_variant: str = "full") -> Non
             print(f"  skipped {remote_root} (not on volume yet)")
         else:
             print(f"  pulled {remote_root} -> ./{dest}/{remote_root.split('/')[-1]}")
-    # MLP-sanity writes a single JSON file (not a directory); pull it separately.
-    mlp_remote = f"{task}/results_mlp_sanity{suffix}.json"
-    rc = subprocess.run(
-        [
-            "modal", "volume", "get", "--force", "deception-data",
-            mlp_remote, dest,
-        ],
-        capture_output=True,
-    )
-    if rc.returncode != 0:
-        print(f"  skipped {mlp_remote} (not on volume yet)")
-    else:
-        print(f"  pulled {mlp_remote} -> ./{dest}/")
+    # Pull single-file artifacts (MLP-sanity JSON, rollout-eval JSON, rollout
+    # samples/labels/corpus/activations).
+    single_files = [
+        f"{task}/results_mlp_sanity{suffix}.json",
+        f"{task}/rollout_eval{suffix}.json",
+        f"{task}/corpus_rollout.json",
+        f"{task}/labels_rollout{suffix}.json",
+        f"{task}/samples_rollout{suffix}.jsonl",
+    ]
+    for remote in single_files:
+        rc = subprocess.run(
+            [
+                "modal", "volume", "get", "--force", "deception-data",
+                remote, dest,
+            ],
+            capture_output=True,
+        )
+        if rc.returncode != 0:
+            print(f"  skipped {remote} (not on volume yet)")
+        else:
+            print(f"  pulled {remote} -> ./{dest}/")
 
 def _pull_data(task: str, dest_root: str = "data", label_variant: str = "full") -> None:
     """Pull the per-task QC artifacts (corpus, plus variant-specific labels / samples)."""
@@ -418,6 +605,7 @@ def main(
     max_total_wait: float = 180.0,
     label_variant: str = "full",
     prefix_lengths: str = "1,3,5,10,20",
+    multi_seeds: str = "0,1,2,3,4",
     mlp_layer: int = 9,
     mlp_offsets: str = "0,5",
     mlp_hidden: int = 256,
@@ -442,7 +630,9 @@ def main(
 
     valid_stages = (
         "all", "model", "label", "samples", "probe",
-        "completion-probe", "per-stratum-probe", "mlp-sanity", "download",
+        "completion-probe", "per-stratum-probe", "mlp-sanity", "multi-seed",
+        "rollout-generate", "rollout-label", "rollout-eval", "rollout-all",
+        "download",
     )
     if stage not in valid_stages:
         raise SystemExit(f"unknown stage: {stage!r} (must be one of {valid_stages})")
@@ -529,6 +719,19 @@ def main(
             stratum_field=stratum_field,
         )
 
+    if stage == "multi-seed":
+        print(
+            f"=== [{task}] (variant={label_variant!r}) multi-seed probe (seeds={multi_seeds}) ==="
+        )
+        do_multi_seed_probe.remote(
+            task=task,
+            max_offset=max_offset,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            seeds=multi_seeds,
+            label_variant=label_variant,
+        )
+
     if stage == "mlp-sanity":
         print(
             f"=== [{task}] (variant={label_variant!r}) MLP-vs-linear sanity check "
@@ -545,12 +748,49 @@ def main(
             label_variant=label_variant,
         )
 
+    rollout_stages = ("rollout-generate", "rollout-label", "rollout-eval", "rollout-all")
+    if stage in rollout_stages:
+        if stage in ("rollout-generate", "rollout-all"):
+            print(f"=== [{task}] rollout-generate (sampling_seed=42, fresh completions) ===")
+            do_rollout_generate.remote(
+                task=task,
+                model_name=model_name,
+                samples_per_prompt=samples_per_prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                dtype=dtype,
+                gen_batch_size=gen_batch_size,
+                extract_batch_size=extract_batch_size,
+                sampling_seed=42,
+            )
+        if stage in ("rollout-label", "rollout-all"):
+            print(f"=== [{task}] rollout-label (variant={label_variant!r}) ===")
+            do_rollout_label.remote(
+                task=task,
+                max_workers=label_workers,
+                labeler_models=labeler_models,
+                per_model_attempts=per_model_attempts,
+                max_total_wait=max_total_wait,
+                label_variant=label_variant,
+            )
+        if stage in ("rollout-eval", "rollout-all"):
+            print(f"=== [{task}] rollout-eval (L9, k=0) ===")
+            do_rollout_eval.remote(
+                task=task,
+                layer=9,
+                offset=0,
+                label_variant=label_variant,
+                run_name="np10_mo10_ep200",
+                subset="deception_prompts",
+            )
+
     if stage == "download" or (
         download and stage in ("all", "probe", "label", "samples")
     ):
         print(f"=== [{task}] (variant={label_variant!r}) downloading QC data ===")
         _pull_data(task, "data", label_variant=label_variant)
-        if stage in ("download", "all", "probe"):
+        if stage in ("download", "all", "probe", "multi-seed"):
             print(f"=== [{task}] (variant={label_variant!r}) downloading probe results ===")
             _pull_results(task, download_dir, label_variant=label_variant)
 

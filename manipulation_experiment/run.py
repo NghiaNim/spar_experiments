@@ -228,6 +228,50 @@ def _variant_suffix(label_variant: str) -> str:
 @app.function(
     gpu=GPU_KIND,
     volumes={DATA_DIR: DATA_VOLUME},
+    timeout=60 * 60 * 2,  # 5 seeds x ~15min = enough headroom
+)
+def do_multi_seed_probe(
+    task: str = "manipulation",
+    max_offset: int = 10,
+    num_epochs: int = 200,
+    neg_per_pos: float = 10.0,
+    seeds: str = "0,1,2,3,4",
+    label_variant: str = "full",
+) -> None:
+    """Loop the v2 token-level probe across multiple seeds; each seed writes to
+    its own subdir (results_transition/np10_mo10_ep200_seedN/) so the existing
+    single-seed result at np10_mo10_ep200/ remains the headline. tools/
+    multi_seed_aggregate.py aggregates the per-seed results locally afterward."""
+    from manipulation_experiment.probes import run_full_sweep
+
+    p = _task_paths(task, label_variant=label_variant)
+    seed_list = [int(s) for s in seeds.split(",") if s.strip()]
+    base_rn = f"np{float(neg_per_pos):g}_mo{max_offset}_ep{num_epochs}"
+    print(f"=== multi-seed probe: {len(seed_list)} seeds, run_name base = {base_rn!r} ===")
+    for seed in seed_list:
+        rn = f"{base_rn}_seed{seed}"
+        print(f"\n--- seed {seed}: writing to {p['results']}/{rn} ---")
+        try:
+            run_full_sweep(
+                activations_path=p["activations"],
+                labels_path=p["labels"],
+                out_dir=p["results"],
+                run_name=rn,
+                max_offset=max_offset,
+                num_epochs=num_epochs,
+                neg_per_pos=neg_per_pos,
+                seed=seed,
+                positive_kind="hack",
+                positive_subset_name="manipulation_prompts",
+            )
+            DATA_VOLUME.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"seed {seed} failed: {exc}")
+
+
+@app.function(
+    gpu=GPU_KIND,
+    volumes={DATA_DIR: DATA_VOLUME},
     timeout=60 * 30,
 )
 def do_completion_probe(
@@ -270,6 +314,7 @@ def do_per_stratum_probe(
     neg_per_pos: float = 10.0,
     seed: int = 0,
     label_variant: str = "full",
+    multi_seeds: str = "0,1,2,3,4",
     mlp_layer: int = 12,
     mlp_offsets: str = "0,5",
     mlp_hidden: int = 256,
@@ -420,6 +465,7 @@ def main(
     max_total_wait: float = 180.0,
     label_variant: str = "full",
     prefix_lengths: str = "1,3,5,10,20",
+    multi_seeds: str = "0,1,2,3,4",
     mlp_layer: int = 12,
     mlp_offsets: str = "0,5",
     mlp_hidden: int = 256,
@@ -443,7 +489,7 @@ def main(
 
     valid_stages = (
         "all", "model", "label", "samples", "probe",
-        "completion-probe", "per-stratum-probe", "mlp-sanity", "download",
+        "completion-probe", "per-stratum-probe", "mlp-sanity", "multi-seed", "download",
     )
     if stage not in valid_stages:
         raise SystemExit(f"unknown stage: {stage!r} (must be one of {valid_stages})")
@@ -531,6 +577,19 @@ def main(
             stratum_field=stratum_field,
         )
 
+    if stage == "multi-seed":
+        print(
+            f"=== [{task}] (variant={label_variant!r}) multi-seed probe (seeds={multi_seeds}) ==="
+        )
+        do_multi_seed_probe.remote(
+            task=task,
+            max_offset=max_offset,
+            num_epochs=num_epochs,
+            neg_per_pos=neg_per_pos,
+            seeds=multi_seeds,
+            label_variant=label_variant,
+        )
+
     if stage == "mlp-sanity":
         print(
             f"=== [{task}] (variant={label_variant!r}) MLP-vs-linear sanity check "
@@ -552,7 +611,7 @@ def main(
     ):
         print(f"=== [{task}] (variant={label_variant!r}) downloading QC data ===")
         _pull_data(task, "data", label_variant=label_variant)
-        if stage in ("download", "all", "probe"):
+        if stage in ("download", "all", "probe", "multi-seed"):
             print(f"=== [{task}] (variant={label_variant!r}) downloading probe results ===")
             _pull_results(task, download_dir, label_variant=label_variant)
 

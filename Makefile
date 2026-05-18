@@ -424,6 +424,71 @@ pull-followups:
 	-$(MAKE) pull-decep-v2
 	-$(MAKE) probe-similarity
 
+# ===== Multi-seed reruns of the v2 probe sweep ============================
+# Re-runs the existing v2 probe with seeds 0..4, writing to per-seed
+# subdirs (np10_mo10_ep200_seedN). Then aggregates locally to mean ± 95%
+# bootstrap CI. Closes the highest-priority reviewer concern from the
+# critique pile (single-seed claims).
+#
+# Modal time budget: 5 seeds × ~15min on L4 = ~75 min per experiment;
+# all three serial is ~3.5 hours. Each seed runs both `all/` and
+# `<exp>_prompts/` subsets so the cells are fully populated.
+.PHONY: multi-seed-sandbag-v2 multi-seed-manip-v2 multi-seed-decep-v2 \
+        multi-seed-all-v2 multi-seed-aggregate
+
+multi-seed-sandbag-v2:
+	$(SB) --task sandbag --stage multi-seed --label-variant transition \
+	      --multi-seeds 0,1,2,3,4 --max-offset $(MAX_OFFSET) \
+	      --num-epochs $(EPOCHS) --neg-per-pos $(NEG_PER_POS)
+
+multi-seed-manip-v2:
+	$(MN) --task manipulation --stage multi-seed --label-variant transition \
+	      --multi-seeds 0,1,2,3,4 --max-offset $(MAX_OFFSET) \
+	      --num-epochs $(EPOCHS) --neg-per-pos $(NEG_PER_POS)
+
+multi-seed-decep-v2:
+	$(DE) --task deception --stage multi-seed --label-variant transition \
+	      --multi-seeds 0,1,2,3,4 --max-offset $(MAX_OFFSET) \
+	      --num-epochs $(EPOCHS) --neg-per-pos $(NEG_PER_POS)
+
+multi-seed-all-v2: multi-seed-sandbag-v2 multi-seed-manip-v2 multi-seed-decep-v2 \
+                   pull-sandbag-v2 pull-manip-v2 pull-decep-v2 \
+                   multi-seed-aggregate
+
+# Local-only: needs numpy. Reads results/<exp>/.../np10_mo10_ep200_seed{0..4}/
+# and prints + saves mean ± 95% CI per (layer, offset) cell, plus the
+# best-layer-per-offset stability across seeds.
+multi-seed-aggregate:
+	python3 tools/multi_seed_aggregate.py --experiment sandbag      --label-variant transition --out results/sandbag/sandbag/multi_seed_aggregate_transition.json
+	python3 tools/multi_seed_aggregate.py --experiment manipulation --label-variant transition --out results/manipulation/manipulation/multi_seed_aggregate_transition.json
+	python3 tools/multi_seed_aggregate.py --experiment deception    --label-variant transition --out results/deception/deception/multi_seed_aggregate_transition.json
+
+# ===== Rollout-level early-warning eval (deception only) =================
+# Generates 240 fresh completions at sampling_seed=42, labels them with
+# the v2 transition labeler, then scores every token with the trained
+# L9 v2 deception probe. Computes "catch rate at k" — what fraction of
+# committed-hack rollouts the probe flags ≥k tokens before the first
+# lying token. Also reports the false-positive rate on honest rollouts.
+#
+# Modal time budget: ~15 min (generate) + ~10 min (label) + ~2 min
+# (score+eval) ≈ 30 min.
+.PHONY: rollout-decep rollout-generate-decep rollout-label-decep rollout-eval-decep
+
+rollout-generate-decep:
+	$(DE) --task deception --stage rollout-generate $(MODEL_FLAGS)
+
+rollout-label-decep:
+	$(DE) --task deception --stage rollout-label --label-variant transition $(LABEL_FLAGS)
+
+rollout-eval-decep:
+	$(DE) --task deception --stage rollout-eval --label-variant transition
+
+# Convenience: end-to-end rollout pipeline (gen + label + eval), then pull.
+rollout-decep:
+	$(DE) --task deception --stage rollout-all --label-variant transition \
+	      $(MODEL_FLAGS) $(LABEL_FLAGS)
+	-$(MAKE) pull-decep-v2
+
 # ----- profanity probe (legacy) -------------------------------------------
 .PHONY: prof-all prof-model prof-label prof-probe prof-elicit prof-pull
 
