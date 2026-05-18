@@ -133,10 +133,13 @@ Add a **single paragraph** to the Methods or Discussion section:
 > "To verify that the misalignment representation is linearly
 > accessible at the chosen layer, we also trained 2-layer MLPs
 > (hidden=256, GELU) on the same (L9, k=0), (L9, k=5), (L12, k=0),
-> and (L12, k=5) cells. Across six comparisons, the MLP scored
-> within 0.012 ROC-AUC of the linear probe in every cell, and was
-> slightly worse on five of six — consistent with mild overfitting
-> on the ~10k token training set. The linear-probe direction is a
+> and (L12, k=5) cells — plus a follow-up sandbag L7 run at k=0
+> and k=5 to cover the PR-AUC headline cell. Across **eight**
+> comparisons, the MLP scored within |Δ| ≤ 0.012 ROC-AUC of the
+> linear probe in every cell, and was slightly worse on **six of
+> eight** (mildly better only on manipulation L12 k=0 +0.004 and
+> sandbag L7 k=5 +0.004) — consistent with mild overfitting on
+> the ~10k token training set. The linear-probe direction is a
 > faithful summary of the discriminative information in the layer."
 
 This is enough for a reviewer who asks "did you check non-linearity?"
